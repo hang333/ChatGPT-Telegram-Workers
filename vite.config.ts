@@ -8,6 +8,7 @@ import checker from 'vite-plugin-checker';
 // import dts from 'vite-plugin-dts';
 import { createDockerPlugin } from './scripts/plugins/docker';
 import { createVersionPlugin, versionDefine } from './scripts/plugins/version';
+import ClosePlugin from './scripts/plugins/vite-plugin-close.ts'
 
 const { BUILD_MODE } = process.env;
 const plugins: Plugin[] = [
@@ -21,6 +22,7 @@ const plugins: Plugin[] = [
     checker({
         typescript: true,
     }),
+    ClosePlugin()
 ];
 
 let entry: string;
