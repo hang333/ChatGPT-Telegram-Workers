@@ -7,7 +7,12 @@ export async function convertAudio({ file, target = 'base64', inputType = 'oga',
         ffmpeg.fs.writeFile(`input.${inputType}`, uint8Array);
         await ffmpeg.run(...command, '-i', `input.${inputType}`, `output.${outputType}`);
         const output = ffmpeg.fs.readFile(`output.${outputType}`);
-        return target === 'base64' ? uint8ArrayToBase64(output) : new Blob([output], { type: `audio/${outputType}` });
+        if (target === 'base64') {
+            return uint8ArrayToBase64(output);
+        }
+        const copy = new Uint8Array(output.byteLength);
+        copy.set(output);
+        return new Blob([copy.buffer], { type: `audio/${outputType}` });
     } catch (error) {
         console.error(`audio convert error: ${error}`);
         throw error;
