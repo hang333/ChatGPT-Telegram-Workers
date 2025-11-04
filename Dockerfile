@@ -14,8 +14,7 @@ FROM oven/bun:alpine AS PROD
 WORKDIR /app
 COPY --from=DEV /app/dist/index.js /app/dist/index.js
 COPY --from=DEV /app/package.json /app/
-RUN apk add --no-cache sqlite && \
-    bun install -p --omit=dev && \
+RUN bun install -p --omit=dev && \
     bun pm cache rm
 EXPOSE 8787
 CMD ["bun", "run", "start:dist"]
