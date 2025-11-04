@@ -2,6 +2,8 @@
 FROM oven/bun:alpine AS DEV
 
 WORKDIR /app
+
+COPY .git ./.git
 COPY package.json vite.config.ts tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
