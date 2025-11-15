@@ -1,5 +1,4 @@
 import type { GetUpdatesResponse } from 'telegram-bot-api-types';
-import type { TelegramBotAPI } from '../../telegram/api';
 import * as fs from 'node:fs';
 import { createCache } from 'cf-worker-adapter/cache';
 import { installFetchProxy } from 'cf-worker-adapter/proxy';
@@ -51,23 +50,23 @@ function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// 针对单个 token 的轮询逻辑：顺序处理 update + 超时 + 退避
+// 单个 token 的轮询逻辑：带 HTTP 超时 + 错误退避 + 有限并发处理
 async function pollToken(token: string) {
     let offset = 0;
-    // 构造 getUpdates URL
+
     let baseURL = ENV.TELEGRAM_API_DOMAIN || 'https://api.telegram.org';
     while (baseURL.endsWith('/')) {
         baseURL = baseURL.slice(0, -1);
     }
     const url = `${baseURL}/bot${token}/getUpdates`;
 
-    const LONG_POLL_TIMEOUT_SEC = 30;   // Telegram 长轮询超时
-    const HTTP_TIMEOUT_MS = 60_000;     // 我们自己的 HTTP 级别超时
-    const ERROR_BACKOFF_MS = 5_000;     // 出错后的退避时间
+    const LONG_POLL_TIMEOUT_SEC = 30;     // Telegram 长轮询超时（服务器端）
+    const HTTP_TIMEOUT_MS = 60_000;       // 本地 HTTP 超时保护
+    const ERROR_BACKOFF_MS = 5_000;       // 出错后的退避时间
+    const MAX_CONCURRENT_HANDLERS = 5;    // 每批最多并发处理的更新数，可按需调
 
     console.log(`[poll] start polling for token ${token.slice(0, 8)}...`);
 
-    // 永久轮询
     // eslint-disable-next-line no-constant-condition
     while (true) {
         try {
@@ -91,7 +90,7 @@ async function pollToken(token: string) {
                 clearTimeout(timeoutId);
             }
 
-            // 429 限流处理
+            // 限流处理
             if (resp.status === 429) {
                 const retryAfter = Number.parseInt(resp.headers.get('Retry-After') || '');
                 const waitSec = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 5;
@@ -102,37 +101,42 @@ async function pollToken(token: string) {
 
             if (!resp.ok) {
                 console.error(`[poll] getUpdates failed: ${resp.status} ${resp.statusText}`);
-                // 避免疯狂重试
                 await sleep(ERROR_BACKOFF_MS);
                 continue;
             }
 
             const data = await resp.json() as GetUpdatesResponse;
-
-            if (!Array.isArray(data.result) || data.result.length === 0) {
+            const updates = Array.isArray(data.result) ? data.result : [];
+            if (updates.length === 0) {
                 // 没有新消息，继续下一轮
                 continue;
             }
 
-            for (const update of data.result) {
-                if (update.update_id >= offset) {
-                    offset = update.update_id + 1;
-                }
-                try {
-                    // 顺序处理，避免无限并发拖死进程
-                    await handleUpdate(token, update);
-                } catch (e) {
-                    console.error('[poll] handleUpdate error', e);
-                    // 单条消息失败不影响后续
-                }
+            // 记录本批次最后一个 update_id
+            const lastUpdateId = updates[updates.length - 1].update_id;
+
+            // 分批并发处理，限制每批并发量
+            let index = 0;
+            while (index < updates.length) {
+                const slice = updates.slice(index, index + MAX_CONCURRENT_HANDLERS);
+                await Promise.all(slice.map(async (update) => {
+                    try {
+                        await handleUpdate(token, update);
+                    } catch (e) {
+                        console.error('[poll] handleUpdate error', e);
+                    }
+                }));
+                index += MAX_CONCURRENT_HANDLERS;
             }
+
+            // 所有本批次处理完后再更新 offset
+            offset = lastUpdateId + 1;
         } catch (e: any) {
             if (e?.name === 'AbortError') {
                 console.warn('[poll] getUpdates http timeout, retrying...');
             } else {
                 console.error('[poll] unexpected error in polling loop', e);
             }
-            // 出错时退避一段时间再重试，避免 tight loop
             await sleep(ERROR_BACKOFF_MS);
         }
     }
@@ -145,7 +149,7 @@ async function runPolling() {
         return;
     }
 
-    // 先删除 webhook，确保不会同时用 webhook + polling
+    // 先删除 webhook，避免 webhook + polling 同时存在
     for (const token of ENV.TELEGRAM_AVAILABLE_TOKENS) {
         try {
             const api = createTelegramBotAPI(token);
@@ -157,9 +161,8 @@ async function runPolling() {
         }
     }
 
-    // 为每个 token 启动一个独立的轮询协程
+    // 为每个 token 启动独立轮询协程
     for (const token of ENV.TELEGRAM_AVAILABLE_TOKENS) {
-        // 不 await，保持并行，每个 token 各自一个 while(true)
         pollToken(token).catch((e) => {
             console.error(`[poll] fatal error in pollToken(${token.slice(0, 8)})`, e);
         });
