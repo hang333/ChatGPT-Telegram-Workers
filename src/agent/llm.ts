@@ -1,6 +1,6 @@
 /* eslint-disable no-case-declarations */
 import type { MetadataExtractor } from '@ai-sdk/openai-compatible';
-import type { LanguageModelV2 } from '@ai-sdk/provider';
+import type { LanguageModelV3 } from '@ai-sdk/provider';
 import type { AgentUserConfig } from '../config/types';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createCohere } from '@ai-sdk/cohere';
@@ -10,7 +10,7 @@ import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
 import { createXai } from '@ai-sdk/xai';
 import { isCfWorker } from '../telegram/utils/tg_utils';
 
-export async function createLlmModel(model: string, context: AgentUserConfig): Promise<LanguageModelV2> {
+export async function createLlmModel(model: string, context: AgentUserConfig): Promise<LanguageModelV3> {
     let [agent, model_id] = model.includes(':') ? model.trim().split(':') : [context.AI_CHAT_PROVIDER, model];
     // if agent not exists, fallback to model
     const availableAgents = ['openai', 'anthropic', 'google', 'cohere', 'vertex', 'xai', 'oailike'];
@@ -35,27 +35,27 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 fetch: mockFetch(model_id, context, agent),
             });
             if (isResponseApi) {
-                return provider.responses(model_id) as LanguageModelV2;
+                return provider.responses(model_id) as LanguageModelV3;
             }
-            return provider.languageModel(model_id) as LanguageModelV2;
+            return provider.languageModel(model_id) as LanguageModelV3;
         case 'anthropic':
             return createAnthropic({
                 baseURL: context.ANTHROPIC_API_BASE,
                 apiKey: context.ANTHROPIC_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV2;
+            }).languageModel(model_id) as LanguageModelV3;
         case 'google':
             return createGoogleGenerativeAI({
                 baseURL: context.GOOGLE_API_BASE,
                 apiKey: context.GOOGLE_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV2;
+            }).languageModel(model_id) as LanguageModelV3;
         case 'cohere':
             return createCohere({
                 baseURL: context.COHERE_API_BASE,
                 apiKey: context.COHERE_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV2;
+            }).languageModel(model_id) as LanguageModelV3;
         case 'vertex':
             if (isCfWorker)
                 throw new Error('Vertex is not supported in Cloudflare Workers');
@@ -67,13 +67,13 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                     credentials: context.VERTEX_CREDENTIALS,
                 },
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV2;
+            }).languageModel(model_id) as unknown as LanguageModelV3;
         case 'xai':
             return createXai({
                 baseURL: context.XAI_API_BASE,
                 apiKey: context.XAI_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV2;
+            }).languageModel(model_id) as LanguageModelV3;
         case 'oailike':
         default:
             return new OpenAICompatibleChatLanguageModel(model_id, {
@@ -85,7 +85,7 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 includeUsage: true,
                 metadataExtractor: extraMetadataExtractor(model_id),
                 fetch: mockFetch(model_id, context, agent),
-            }) as LanguageModelV2;
+            }) as LanguageModelV3;
     }
     // if (model.includes(':')) {
     //     if (model.startsWith('google:') || model.startsWith('vertex:')) {
@@ -236,7 +236,7 @@ interface MockParams {
 
 function mockParams({ modelId, config, provider, options }: MockParams) {
     const extraParams = (config[`${provider.toUpperCase()}_API_EXTRA_PARAMS` as keyof AgentUserConfig] as Record<string, Record<string, any>>) || {};
-    const { PARAMS_MODIFIER: modifier, OAILIKE_RELAY_TOOLS: relayTools, USE_OAILIKE_RELAY_TOOLS: relayToolsList, GOOGLE_BUILDIN, USE_GOOGLE_BUILDIN, SEARCH_GROUNDING } = config;
+    const { PARAMS_MODIFIER: modifier, OAILIKE_RELAY_TOOLS: relayTools, USE_OAILIKE_RELAY_TOOLS: relayToolsList } = config;
 
     if (provider === 'oailike') {
         const relayKey = Object.keys(relayTools).find(key => modelId.includes(key));
@@ -263,19 +263,14 @@ function mockParams({ modelId, config, provider, options }: MockParams) {
             { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
             { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
         ];
-        const usedBuildIn = new Set(GOOGLE_BUILDIN.filter(t => USE_GOOGLE_BUILDIN.includes(t)));
-        if (SEARCH_GROUNDING) {
-            usedBuildIn.add('googleSearch');
+        // Inject thinkingConfig based on GOOGLE_THINKING_LEVEL
+        if (config.GOOGLE_THINKING_LEVEL !== 'off') {
+            options.generationConfig = options.generationConfig || {};
+            options.generationConfig.thinkingConfig = {
+                thinkingLevel: config.GOOGLE_THINKING_LEVEL,
+            };
         }
-        if (usedBuildIn.size > 0) {
-            // options.tools = {};
-            // Object.assign(options.tools, ...usedBuildIn.map(t => ({
-            //     [t]: {},
-            // })));
-            options.tools = [...usedBuildIn].map(t => ({
-                [t]: {},
-            }));
-        }
+        // Note: Google built-in tools are now injected via AI SDK's google.tools.* in model_middleware.ts
     }
 
     return paramsModifier(modelId, options, modifier, extraParams);
@@ -290,4 +285,29 @@ function mockFetch(modelId: string, context: AgentUserConfig, provider: string) 
             body: JSON.stringify(body),
         });
     };
+}
+
+export function getGoogleBuiltinTools(context: AgentUserConfig) {
+    const google = createGoogleGenerativeAI({
+        baseURL: context.GOOGLE_API_BASE,
+        apiKey: context.GOOGLE_API_KEY || undefined,
+    });
+
+    const builtinTools: Record<string, any> = {};
+    const enabledTools = new Set([
+        ...context.USE_GOOGLE_BUILDIN,
+        ...(context.SEARCH_GROUNDING ? ['googleSearch'] : []),
+    ]);
+
+    if (enabledTools.has('googleSearch')) {
+        builtinTools.googleSearch = google.tools.googleSearch({});
+    }
+    if (enabledTools.has('urlContext')) {
+        builtinTools.urlContext = google.tools.urlContext({});
+    }
+    if (enabledTools.has('codeExecution')) {
+        builtinTools.codeExecution = google.tools.codeExecution({});
+    }
+
+    return builtinTools;
 }

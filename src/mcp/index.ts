@@ -1,7 +1,6 @@
 import type { MCPTransport } from '../config/types';
+import { createMCPClient } from '@ai-sdk/mcp';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { experimental_createMCPClient as createMCPClient } from 'ai';
-import { Experimental_StdioMCPTransport as MCPStdioTransport } from 'ai/mcp-stdio';
 import { ENV } from '../config/env';
 import { log } from '../log';
 import { isCfWorker } from '../telegram/utils/tg_utils';
@@ -24,9 +23,11 @@ export async function initializeMcp() {
     {
         const mcpConfig = Object.entries(ENV.MCP_CONFIG);
         const toolPromises = mcpConfig.map(async ([name, transport]: [string, MCPTransport]) => {
-            let mcpTransport: MCPTransport | MCPStdioTransport | StreamableHTTPClientTransport;
+            let mcpTransport: any;
             switch (transport.type) {
                 case 'stdio':
+                    // Dynamic import to avoid bundling node-specific modules in Cloudflare Workers
+                    const { Experimental_StdioMCPTransport: MCPStdioTransport } = await import('@ai-sdk/mcp/mcp-stdio');
                     mcpTransport = new MCPStdioTransport({
                         command: transport.command,
                         args: transport.args,

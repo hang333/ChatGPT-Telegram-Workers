@@ -67,7 +67,9 @@ export default defineConfig({
             external: [
                 'ws',
                 '@ai-sdk/google-vertex',
+                '@ai-sdk/mcp/mcp-stdio',
                 'node:buffer',
+                'node:child_process',
                 'node-cron',
                 'child_process',
                 'node:fs',

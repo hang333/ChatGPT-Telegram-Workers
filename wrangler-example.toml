@@ -148,6 +148,12 @@ OPENAI_API_KEY = 'SK-1,SK-2'
 #GOOGLE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/'
 ## Google Gemini Model
 #GOOGLE_CHAT_MODEL = 'gemini-pro'
+## Google Thinking Level: 'off' | 'minimal' | 'low' | 'medium' | 'high'
+## Pro supports: 'low', 'high'; Flash supports: 'minimal', 'low', 'medium', 'high'
+#GOOGLE_THINKING_LEVEL = 'off'
+## Google Built-in Tools: 'googleSearch', 'urlContext', 'codeExecution'
+## When googleSearch is enabled, all custom tools are disabled (only urlContext can coexist)
+#USE_GOOGLE_BUILDIN = '["googleSearch"]'
 
 ## -- Mistral 配置 --
 ##

@@ -1,5 +1,5 @@
 /* eslint-disable no-case-declarations */
-import type { LanguageModelV2 } from '@ai-sdk/provider';
+import type { LanguageModelV3 } from '@ai-sdk/provider';
 import type { ModelMessage, StepResult, TextStreamPart } from 'ai';
 import type { AgentUserConfig } from '../config/env';
 import type { MessageInfo, ToolChoice } from './model_middleware';
@@ -176,7 +176,7 @@ export async function streamHandler(stream: AsyncIterable<any>, contentExtractor
     return messageInfo.content;
 }
 
-export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV2; toolModel?: LanguageModelV2; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
+export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV3; toolModel?: LanguageModelV3; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
     // 引入多轮对话 拼接提示
     const messageInfo: MessageInfo = {
         content: cache?.join() ?? '',
@@ -220,20 +220,22 @@ function thinkingExtractor(messageInfo: MessageInfo) {
     const thinkingTag = '>`Thinking\\.\\.\\.`';
     return (data: TextStreamPart<any>) => {
         switch (data.type) {
-            case 'reasoning':
+            case 'reasoning-start':
                 if (!ENV.SHOW_THINKING_TEXT) {
                     return '';
                 }
-                if (!thinkingStart) {
-                    thinkingStart = true;
-                    thinkingStartTime = Date.now();
-                    // thinking转为引用
-                    return `${thinkingTag}\n>${data.text.replace(/\n/g, '\n>')}`;
+                thinkingStart = true;
+                thinkingStartTime = Date.now();
+                return `${thinkingTag}\n>`;
+            case 'reasoning-delta':
+                if (!ENV.SHOW_THINKING_TEXT) {
+                    return '';
                 }
                 return data.text.replace(/\n/g, '\n>');
-            case 'text':
-                if (!thinkingStart)
-                    return data.text ?? '';
+            case 'reasoning-end':
+                if (!ENV.SHOW_THINKING_TEXT || !thinkingStart) {
+                    return '';
+                }
                 thinkingStart = false;
                 const thinkingTime = ((Date.now() - thinkingStartTime!) / 1e3).toFixed(1);
                 messageInfo.content = messageInfo.content
@@ -242,7 +244,9 @@ function thinkingExtractor(messageInfo: MessageInfo) {
                     .replace(/(\n>)*$/, '')
                     // three or more newlines are trimmed to 2 newlines
                     .replace(/(\n>){3,}$/g, '\n>\n>');
-                return `\n>✹\n${SEGMENTATION_MARK}\n${data.text}`;
+                return `\n>✹\n${SEGMENTATION_MARK}\n`;
+            case 'text-delta':
+                return data.text ?? '';
             case 'error':
                 throw data.error;
             default:
@@ -251,7 +255,7 @@ function thinkingExtractor(messageInfo: MessageInfo) {
     };
 }
 
-async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV2; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepFinish: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
+async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV3; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepFinish: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
     const providerOptions = {
         openai: context.OPENAI_PROVIDER_OPTIONS,
         anthropic: context.ANTHROPIC_PROVIDER_OPTIONS,

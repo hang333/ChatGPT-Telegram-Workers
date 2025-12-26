@@ -425,10 +425,6 @@ export class GeminiConfig {
 
     GOOGLE_PROVIDER_OPTIONS = {
         // responseModalities: ['TEXT'],
-        // thinkingConfig: {
-        //     thinkingBudget: '1024',
-        //     includeThoughts: false,
-        // },
         // cachedContent: '',
         // structuredOutputs: false,
         safetySettings: [
@@ -439,12 +435,16 @@ export class GeminiConfig {
             { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
         ],
         threshold: 'OFF',
-        // useSearchGrounding: true,
         // dynamicRetrievalConfig: {
         //     // mode: 'MODE_DYNAMIC', // 'MODE_UNSPECIFIED' | 'MODE_DYNAMIC'
         //     // dynamicThreshold: 5,
         // },
     };
+
+    // Thinking level for Gemini models
+    // Pro supports: 'low', 'high'; Flash supports: 'minimal', 'low', 'medium', 'high'
+    // Set to 'off' to disable thinking
+    GOOGLE_THINKING_LEVEL: 'off' | 'minimal' | 'low' | 'medium' | 'high' = 'off';
 }
 
 // -- Mistral 配置 --
