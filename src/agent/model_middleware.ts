@@ -309,6 +309,7 @@ export async function warpLLMParams({ messages, model, cache }: { messages: Mode
     // Only Gemini 2/3 support google_buildin tool activation via LLM
     if (!model.modelId.startsWith('gemini-2') && !model.modelId.startsWith('gemini-3')) {
         activeTools = activeTools.filter(t => t !== 'google_buildin');
+        delete (tools as any).google_buildin;
     }
 
     let toolChoice;

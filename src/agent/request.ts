@@ -439,6 +439,13 @@ async function combineParams({ context, middleware, model, messages, activeTools
         google: context.GOOGLE_PROVIDER_OPTIONS,
         xai: context.XAI_PROVIDER_OPTIONS,
     };
+
+    // `activeTools` (AI SDK option) filters the provided `tools` by name.
+    // Passing an empty array disables *all* tools, which breaks provider-built-in tools
+    // (e.g. Gemini's `googleSearch`) when our internal `activeTools` list is empty.
+    const aiSdkActiveTools = tools && typeof tools === 'object'
+        ? Object.keys(tools)
+        : [];
     return {
         model: retryableModel,
         providerOptions,
@@ -450,7 +457,7 @@ async function combineParams({ context, middleware, model, messages, activeTools
         temperature: (activeTools?.length || 0) > 0 ? context.FUNCTION_CALL_TEMPERATURE : context.CHAT_TEMPERATURE,
         tools,
         maxTokens: context.MAX_TOKENS,
-        activeTools,
+        ...(aiSdkActiveTools.length > 0 ? { activeTools: aiSdkActiveTools } : {}),
         prepareStep: prepareStepPre(middleware),
         stopWhen: stepCountIs(context.MAX_STEPS),
         onStepFinish,
