@@ -132,6 +132,13 @@ export function clearLog(context: AgentUserConfig) {
     logSingleton.delete(context);
 }
 
+export function popLog(context: AgentUserConfig) {
+    const logs = logSingleton.get(context);
+    if (logs && logs.length > 0) {
+        logs.pop();
+    }
+}
+
 export interface LogStruct {
     model: string;
     functions: { name: string; args: any; error?: string; time: number }[];

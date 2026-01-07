@@ -6,7 +6,7 @@ import type { MessageInfo, ToolChoice } from './model_middleware';
 import type { ChatStreamTextHandler, OpenAIFuncCallData, ResponseMessage } from './types';
 import { generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
 import { ENV } from '../config/env';
-import { log } from '../log';
+import { log, popLog } from '../log';
 import { SEGMENTATION_MARK } from '../telegram/utils/md2tgmd';
 import { AIMiddleware, metaDataExtractor } from './model_middleware';
 import { BAD_PREFIX_GOOGLE_SEARCH, createChatRetryableModel, isBadPrefixResponseText } from './retry';
@@ -307,6 +307,11 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
         const cacheText = cache?.join() ?? '';
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            // On retry, remove the log entry from the failed attempt
+            if (attempt > 1) {
+                popLog(context);
+            }
+
             // Reset state per attempt (we only retry when nothing has been sent yet).
             messageInfo.content = cacheText;
             messageInfo.occured_error = false;
