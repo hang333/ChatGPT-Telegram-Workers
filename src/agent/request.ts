@@ -6,8 +6,9 @@ import type { MessageInfo, ToolChoice } from './model_middleware';
 import type { ChatStreamTextHandler, OpenAIFuncCallData, ResponseMessage } from './types';
 import { generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
 import { ENV } from '../config/env';
-import { log, popLog } from '../log';
+import { getLogSingleton, log, popLog } from '../log';
 import { SEGMENTATION_MARK } from '../telegram/utils/md2tgmd';
+import { StreamRetryExhaustedError } from './errors';
 import { AIMiddleware, metaDataExtractor } from './model_middleware';
 import { BAD_PREFIX_GOOGLE_SEARCH, createChatRetryableModel, isBadPrefixResponseText } from './retry';
 import { Stream } from './stream';
@@ -324,41 +325,56 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
 
             const guarded = await guardedStreamHandler(stream.fullStream, dataExtractor, onStream, messageInfo);
 
-            if (guarded.detectedBadPrefix) {
+            const shouldRetryEmpty = !guarded.sawToolCall && !messageInfo.occured_error && !guarded.assistantHasNonWhitespaceText;
+            const shouldRetryBadPrefix = !guarded.sawToolCall && !messageInfo.occured_error
+                && (guarded.detectedBadPrefix || isBadPrefixResponseText(guarded.assistantTextProbe));
+
+            if (shouldRetryEmpty) {
+                void Promise.resolve(stream.response).catch(() => { });
+                void Promise.resolve(stream.providerMetadata).catch(() => { });
+                if (attempt < maxAttempts) {
+                    log.info(`[ai-retry] stream retry on empty response (${attempt + 1}/${maxAttempts})`);
+                    continue;
+                }
+                const logRecord = getLogSingleton({ config: context, init: false });
+                if (logRecord) {
+                    logRecord.end_time = Date.now();
+                }
+                log.warn('[ai-retry] stream retries exhausted: empty response');
+                throw new StreamRetryExhaustedError({
+                    reason: 'empty-response',
+                    attempts: maxAttempts,
+                    provider: model.provider,
+                    modelId: model.modelId,
+                });
+            }
+
+            if (shouldRetryBadPrefix) {
                 void Promise.resolve(stream.response).catch(() => { });
                 void Promise.resolve(stream.providerMetadata).catch(() => { });
                 if (attempt < maxAttempts) {
                     log.info(`[ai-retry] stream retry on bad prefix (${attempt + 1}/${maxAttempts})`);
                     continue;
                 }
-                contentFull = guarded.content;
-                responseMessages = [{ role: 'assistant', content: contentFull }];
-                break;
+                const logRecord = getLogSingleton({ config: context, init: false });
+                if (logRecord) {
+                    logRecord.end_time = Date.now();
+                }
+                log.warn(`[ai-retry] stream retries exhausted: bad prefix (${BAD_PREFIX_GOOGLE_SEARCH})`);
+                throw new StreamRetryExhaustedError({
+                    reason: 'bad-prefix',
+                    attempts: maxAttempts,
+                    provider: model.provider,
+                    modelId: model.modelId,
+                });
             }
 
             contentFull = guarded.content;
-            responseMessages = messageInfo.occured_error ? [{ role: 'assistant', content: contentFull }] : (await stream.response).messages;
-            contentFull = messageInfo.occured_error ? contentFull : metaDataExtractor(await stream.providerMetadata, model.provider, contentFull);
-
-            const shouldRetryEmpty = !guarded.sawToolCall && !messageInfo.occured_error && !guarded.assistantHasNonWhitespaceText;
-            const shouldRetryBadPrefix = !guarded.sawToolCall && !messageInfo.occured_error && isBadPrefixResponseText(guarded.assistantTextProbe);
-
-            if (shouldRetryEmpty) {
-                if (attempt < maxAttempts) {
-                    log.info(`[ai-retry] stream retry on empty response (${attempt + 1}/${maxAttempts})`);
-                    continue;
-                }
-                log.warn('[ai-retry] stream retries exhausted: empty response');
-                break;
-            }
-
-            if (shouldRetryBadPrefix) {
-                if (attempt < maxAttempts) {
-                    log.info(`[ai-retry] stream retry on bad prefix (${attempt + 1}/${maxAttempts})`);
-                    continue;
-                }
-                log.warn(`[ai-retry] stream retries exhausted: bad prefix (${BAD_PREFIX_GOOGLE_SEARCH})`);
-                break;
+            if (messageInfo.occured_error) {
+                responseMessages = [{ role: 'assistant', content: contentFull }];
+            } else {
+                responseMessages = (await stream.response).messages;
+                contentFull = metaDataExtractor(await stream.providerMetadata, model.provider, contentFull);
             }
 
             break;

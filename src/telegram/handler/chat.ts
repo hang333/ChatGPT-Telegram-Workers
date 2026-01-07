@@ -9,6 +9,7 @@ import type { UnionData } from '../utils/tg_utils';
 import type { MessageHandler } from './types';
 import { APICallError } from 'ai';
 import { loadASRLLM, loadChatLLM, loadImageGen, loadTTSLLM, TTS_AGENTS } from '../../agent';
+import { StreamRetryExhaustedError } from '../../agent/errors';
 import { loadHistory, requestCompletionsFromLLM } from '../../agent/chat';
 import { ENV } from '../../config/env';
 import { clearLog, getLog, log } from '../../log';
@@ -51,6 +52,15 @@ export async function chatWithLLM(
         if (APICallError.isInstance(e)) {
             log.error(e.responseBody);
         }
+
+        if (e instanceof StreamRetryExhaustedError) {
+            const reasonText = e.reason === 'empty-response'
+                ? '模型返回空响应'
+                : '模型返回异常前缀';
+            const errMsg = `请求失败：${e.modelId} 重试 ${e.attempts} 次仍未返回有效内容（${reasonText}）。\n\n你可以稍后重试，或切换模型/供应商。`;
+            return streamSender.end!(errMsg, false, 'chat');
+        }
+
         let errMsg = '';
         if ((e as Error).name === 'AbortError') {
             errMsg += 'Chat with LLM timeout';
@@ -157,6 +167,7 @@ export function OnStreamHander(sender: MessageSender | ChosenInlineSender, conte
     let nextEnableTime: number | null = null;
     const isMessageSender = sender instanceof MessageSender;
     const sendInterval = isMessageSender ? ENV.TELEGRAM_MIN_STREAM_INTERVAL : ENV.INLINE_QUERY_SEND_INTERVAL;
+    let ended = false;
     const isSendTelegraph = (text: string) => {
         return isMessageSender
             ? ENV.TELEGRAPH_SCOPE.includes(sender.context.chatType) && ENV.TELEGRAPH_NUM_LIMIT > 0 && text.length > ENV.TELEGRAPH_NUM_LIMIT
@@ -189,6 +200,7 @@ export function OnStreamHander(sender: MessageSender | ChosenInlineSender, conte
     let cache = '';
     let heartWaitedTime = 0;
     let heartbeatId: NodeJS.Timeout;
+    let heartbeatBusy = false;
     const HEARTBEAT_INTERVAL = 10_000;
 
     const streamSender = {
@@ -201,15 +213,29 @@ export function OnStreamHander(sender: MessageSender | ChosenInlineSender, conte
     };
 
     const updateHeartbeat = () => {
+        if (ended) {
+            return;
+        }
         heartbeatId && clearInterval(heartbeatId);
         heartbeatId = setInterval(async () => {
+            if (ended || heartbeatBusy) {
+                return;
+            }
+            heartbeatBusy = true;
             heartWaitedTime += HEARTBEAT_INTERVAL / 1000;
-            await sentPromise;
-            sentPromise = streamSender.send!(`${cache}\n\nwaited for ${heartWaitedTime}s`, 'heartbeat');
+            try {
+                await sentPromise;
+                await streamSender.send!(`${cache}\n\nwaited for ${heartWaitedTime}s`, 'heartbeat');
+            } finally {
+                heartbeatBusy = false;
+            }
         }, HEARTBEAT_INTERVAL);
     };
 
     streamSender.send = async (text: string, type = 'chat'): Promise<any> => {
+        if (ended) {
+            return;
+        }
         try {
             if (type === 'chat') {
                 cache = text;
@@ -273,6 +299,7 @@ export function OnStreamHander(sender: MessageSender | ChosenInlineSender, conte
 
     streamSender.end = async (text: string, needLog = true, type = 'chat'): Promise<any> => {
         log.info('--- start end ---');
+        ended = true;
         streamSender.clearHeartbeat();
         await sentPromise;
         if ((nextEnableTime || 0) > Date.now()) {

@@ -114,7 +114,9 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
             }
             // warp messages
             const isResponseApi = currentModel.provider.endsWith('.responses');
-            warpMessages(params, tools, activeTools, isResponseApi, rawSystemPrompt);
+            const hasGoogleBuiltinTools = currentModel.provider.startsWith('google')
+                && (config.SEARCH_GROUNDING || config.USE_GOOGLE_BUILDIN.length > 0);
+            warpMessages(params, tools, activeTools, isResponseApi, rawSystemPrompt, hasGoogleBuiltinTools);
             return params;
         },
 
@@ -183,7 +185,14 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
     };
 }
 
-function warpMessages(params: LanguageModelV3CallOptions, allTools: Record<string, any>, activeTools: string[], isResponseApi: boolean, rawSystemPrompt: string | undefined) {
+function warpMessages(
+    params: LanguageModelV3CallOptions,
+    allTools: Record<string, any>,
+    activeTools: string[],
+    isResponseApi: boolean,
+    rawSystemPrompt: string | undefined,
+    allowToolsWhenNoActiveTools: boolean,
+) {
     const { prompt: messages, tools } = params;
 
     const getSystemContent = () => {
@@ -243,7 +252,7 @@ function warpMessages(params: LanguageModelV3CallOptions, allTools: Record<strin
         return modifiedMessages;
     };
 
-    if (tools && activeTools.length === 0) {
+    if (tools && activeTools.length === 0 && !allowToolsWhenNoActiveTools) {
         tools.length = 0;
     }
     if (ENV.MESSAGE_COMPATIBLE) {
