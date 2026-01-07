@@ -8,6 +8,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
 import { createXai } from '@ai-sdk/xai';
+import { wrapLanguageModel } from 'ai';
 import { isCfWorker } from '../telegram/utils/tg_utils';
 
 export async function createLlmModel(model: string, context: AgentUserConfig): Promise<LanguageModelV3> {
@@ -44,24 +45,30 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 apiKey: context.ANTHROPIC_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
             }).languageModel(model_id) as LanguageModelV3;
-        case 'google':
-            const googleModel = createGoogleGenerativeAI({
-                baseURL: context.GOOGLE_API_BASE,
-                apiKey: context.GOOGLE_API_KEY || undefined,
-                fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV3;
+	        case 'google':
+	            const googleModel = createGoogleGenerativeAI({
+	                baseURL: context.GOOGLE_API_BASE,
+	                apiKey: context.GOOGLE_API_KEY || undefined,
+	                fetch: mockFetch(model_id, context, agent),
+	            }).languageModel(model_id) as LanguageModelV3;
 
-            // Google supports youtube urls and internal file urls, but not arbitrary external urls.
-            // (Gemini 2/3 model families)
-            if (googleModel.modelId.startsWith('gemini-2') || googleModel.modelId.startsWith('gemini-3')) {
-                googleModel.supportedUrls = {
-                    '*': [
-                        /^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/,
-                        /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/,
-                    ],
-                };
-            }
-            return googleModel;
+	            // Google supports youtube urls and internal file urls, but not arbitrary external urls.
+	            // (Gemini 2/3 model families)
+	            if (googleModel.modelId.startsWith('gemini-2') || googleModel.modelId.startsWith('gemini-3')) {
+	                return wrapLanguageModel({
+	                    model: googleModel,
+	                    middleware: {
+	                        specificationVersion: 'v3',
+	                        overrideSupportedUrls: () => ({
+	                            '*': [
+	                                /^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/,
+	                                /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/,
+	                            ],
+	                        }),
+	                    },
+	                });
+	            }
+	            return googleModel;
         case 'cohere':
             return createCohere({
                 baseURL: context.COHERE_API_BASE,
