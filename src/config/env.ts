@@ -90,6 +90,7 @@ class Environment extends EnvironmentConfig {
     readonly MCP_CONFIG: Record<string, MCPTransport> = {};
     DATABASE: KVNamespace = null as any;
     API_GUARD: APIGuard | null = null;
+    private hasLoggedMaxRetries = false;
 
     constructor() {
         super();
@@ -155,6 +156,11 @@ class Environment extends EnvironmentConfig {
         this.migrateOldEnv(source);
         this.USER_CONFIG.DEFINE_KEYS = [];
         this.I18N = loadI18n(this.LANGUAGE.toLowerCase());
+
+        if (!this.hasLoggedMaxRetries) {
+            this.hasLoggedMaxRetries = true;
+            console.info(`[CONFIG] MAX_RETRIES = ${this.USER_CONFIG.MAX_RETRIES}`);
+        }
 
         // 选择对应语言的SYSTEM_INIT_MESSAGE
         if (!this.USER_CONFIG.SYSTEM_INIT_MESSAGE) {

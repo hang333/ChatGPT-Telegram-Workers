@@ -14,6 +14,7 @@ import { ENV } from '../config/env';
 import { getLogSingleton, log } from '../log';
 import { getTools, sendToolResult, validTools } from '../tools';
 import { createLlmModel, getGoogleBuiltinTools } from './llm';
+import { createChatRetryableModel } from './retry';
 
 type Writeable<T> = { -readonly [P in keyof T as P extends 'modelId' ? P : never]: T[P] };
 export interface MessageInfo {
@@ -70,20 +71,14 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
             currentModel = model;
             if (activeTools.length > 0) {
                 // (model as Writeable<LanguageModelV2>).modelId = config.TOOL_MODEL;
-                currentModel = wrapLanguageModel({
+                currentModel = createChatRetryableModel(wrapLanguageModel({
                     model: await createLlmModel(config.TOOL_MODEL, config),
                     middleware,
-                });
+                }), config.MAX_RETRIES);
             }
             record = getLogSingleton({ config });
             // record model log
             recordModelLog({ config, model: currentModel, record });
-            // google已支持youtube url以及内部文件url，但未支持其他外部url
-            if (currentModel.provider.startsWith('google') && model.modelId.startsWith('gemini-2')) {
-                currentModel.supportedUrls = {
-                    '*': [/^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/, /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/],
-                };
-            }
 
             return {
                 model: currentModel,
@@ -302,8 +297,8 @@ export async function warpLLMParams({ messages, model, cache }: { messages: Mode
         const googleTools = getGoogleBuiltinTools(context);
         tools = { ...tools, ...googleTools };
     }
-    // only gemini-2 support google_buildin tool activation via LLM
-    if (!model.modelId.startsWith('gemini-2')) {
+    // Only Gemini 2/3 support google_buildin tool activation via LLM
+    if (!model.modelId.startsWith('gemini-2') && !model.modelId.startsWith('gemini-3')) {
         activeTools = activeTools.filter(t => t !== 'google_buildin');
     }
 

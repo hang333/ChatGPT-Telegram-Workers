@@ -4,13 +4,12 @@ import type { ModelMessage, StepResult, TextStreamPart } from 'ai';
 import type { AgentUserConfig } from '../config/env';
 import type { MessageInfo, ToolChoice } from './model_middleware';
 import type { ChatStreamTextHandler, OpenAIFuncCallData, ResponseMessage } from './types';
-import { APICallError, generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
-import { createRetryable, isErrorAttempt, isResultAttempt } from 'ai-retry';
-import { retryAfterDelay } from 'ai-retry/retryables';
+import { generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
 import { ENV } from '../config/env';
 import { log } from '../log';
 import { SEGMENTATION_MARK } from '../telegram/utils/md2tgmd';
 import { AIMiddleware, metaDataExtractor } from './model_middleware';
+import { BAD_PREFIX_GOOGLE_SEARCH, createChatRetryableModel, isBadPrefixResponseText } from './retry';
 import { Stream } from './stream';
 
 export interface SseChatCompatibleOptions {
@@ -178,6 +177,109 @@ export async function streamHandler(stream: AsyncIterable<any>, contentExtractor
     return messageInfo.content;
 }
 
+async function guardedStreamHandler(stream: AsyncIterable<any>, contentExtractor: (data: any) => string | null, onStream: ChatStreamTextHandler, messageInfo: MessageInfo): Promise<{
+    content: string;
+    sawToolCall: boolean;
+    assistantTextProbe: string;
+    assistantHasNonWhitespaceText: boolean;
+    detectedBadPrefix: boolean;
+}> {
+    let lengthDelta = 0;
+    let updateStep = 5;
+    const maxLength = 10_000;
+
+    let sawToolCall = false;
+    let assistantTextProbe = '';
+    let assistantHasNonWhitespaceText = false;
+    let detectedBadPrefix = false;
+
+    const badPrefix = BAD_PREFIX_GOOGLE_SEARCH;
+    let allowSend = false;
+
+    const appendProbe = (delta: string) => {
+        if (assistantTextProbe.length >= badPrefix.length + 64) {
+            return;
+        }
+        assistantTextProbe += delta;
+    };
+
+    const shouldKeepBufferingForPrefixCheck = () => {
+        const trimmedStart = assistantTextProbe.trimStart();
+        if (trimmedStart.length === 0) {
+            return true;
+        }
+        if (badPrefix.startsWith(trimmedStart)) {
+            return true;
+        }
+        return false;
+    };
+
+    try {
+        for await (const part of stream) {
+            if (part && typeof part === 'object' && typeof (part as any).type === 'string') {
+                const partType = (part as any).type as string;
+                if (partType.startsWith('tool-')) {
+                    sawToolCall = true;
+                }
+
+                if (partType === 'text-delta' && typeof (part as any).text === 'string') {
+                    const deltaText = (part as any).text as string;
+                    if (deltaText !== '') {
+                        appendProbe(deltaText);
+                        if (/\S/.test(deltaText)) {
+                            assistantHasNonWhitespaceText = true;
+                        }
+
+                        const trimmedStart = assistantTextProbe.trimStart();
+                        if (trimmedStart.startsWith(badPrefix)) {
+                            detectedBadPrefix = true;
+                            await (stream as any)?.cancel?.('bad-prefix');
+                            break;
+                        }
+
+                        if (!allowSend && !shouldKeepBufferingForPrefixCheck()) {
+                            allowSend = true;
+                        }
+                    }
+                }
+            }
+
+            const textPart = contentExtractor(part);
+            if (textPart === null || textPart === undefined || textPart === '') {
+                continue;
+            }
+
+            lengthDelta += textPart.length;
+            messageInfo.content += textPart;
+
+            if (allowSend && lengthDelta > updateStep) {
+                lengthDelta = 0;
+                updateStep = Math.min(updateStep + 40, maxLength);
+                onStream.send(`${messageInfo.content.trimEnd()}●`);
+            }
+        }
+    } catch (e) {
+        if (messageInfo.content === '') {
+            throw e;
+        }
+        console.error((e as Error).message, (e as Error).stack);
+        let content: string | undefined;
+        if (e instanceof TypeValidationError) {
+            content = (e.value as any)?.choices?.[0]?.delta?.content;
+        }
+        messageInfo.content += (content ?? `\n\n\`\`\`Error\n${(e as Error).message}\n\`\`\``);
+        messageInfo.occured_error = true;
+    }
+
+    return {
+        content: messageInfo.content,
+        sawToolCall,
+        assistantTextProbe,
+        assistantHasNonWhitespaceText,
+        detectedBadPrefix,
+    };
+}
+
 export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV3; toolModel?: LanguageModelV3; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
     // 引入多轮对话 拼接提示
     const messageInfo: MessageInfo = {
@@ -199,13 +301,60 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
     let contentFull = '';
 
     if (onStream !== null) {
-        // const stream = streamText({ ...hander_params, ...mockParams(middleware) });
-        const stream = streamText(handeredParams);
-        const dataExtractor = thinkingExtractor(messageInfo);
+        const maxRetriesRaw = Number(context.MAX_RETRIES ?? 0);
+        const maxRetries = Number.isFinite(maxRetriesRaw) ? Math.max(0, Math.trunc(maxRetriesRaw)) : 0;
+        const maxAttempts = Math.max(1, maxRetries + 1);
+        const cacheText = cache?.join() ?? '';
 
-        contentFull = await streamHandler(stream.fullStream, dataExtractor, onStream, messageInfo);
-        responseMessages = messageInfo.occured_error ? [{ role: 'assistant', content: contentFull }] : (await stream.response).messages;
-        contentFull = messageInfo.occured_error ? contentFull : metaDataExtractor(await stream.providerMetadata, model.provider, contentFull);
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            // Reset state per attempt (we only retry when nothing has been sent yet).
+            messageInfo.content = cacheText;
+            messageInfo.occured_error = false;
+
+            const stream = streamText(handeredParams);
+            const dataExtractor = thinkingExtractor(messageInfo);
+
+            const guarded = await guardedStreamHandler(stream.fullStream, dataExtractor, onStream, messageInfo);
+
+            if (guarded.detectedBadPrefix) {
+                void Promise.resolve(stream.response).catch(() => { });
+                void Promise.resolve(stream.providerMetadata).catch(() => { });
+                if (attempt < maxAttempts) {
+                    log.info(`[ai-retry] stream retry on bad prefix (${attempt + 1}/${maxAttempts})`);
+                    continue;
+                }
+                contentFull = guarded.content;
+                responseMessages = [{ role: 'assistant', content: contentFull }];
+                break;
+            }
+
+            contentFull = guarded.content;
+            responseMessages = messageInfo.occured_error ? [{ role: 'assistant', content: contentFull }] : (await stream.response).messages;
+            contentFull = messageInfo.occured_error ? contentFull : metaDataExtractor(await stream.providerMetadata, model.provider, contentFull);
+
+            const shouldRetryEmpty = !guarded.sawToolCall && !messageInfo.occured_error && !guarded.assistantHasNonWhitespaceText;
+            const shouldRetryBadPrefix = !guarded.sawToolCall && !messageInfo.occured_error && isBadPrefixResponseText(guarded.assistantTextProbe);
+
+            if (shouldRetryEmpty) {
+                if (attempt < maxAttempts) {
+                    log.info(`[ai-retry] stream retry on empty response (${attempt + 1}/${maxAttempts})`);
+                    continue;
+                }
+                log.warn('[ai-retry] stream retries exhausted: empty response');
+                break;
+            }
+
+            if (shouldRetryBadPrefix) {
+                if (attempt < maxAttempts) {
+                    log.info(`[ai-retry] stream retry on bad prefix (${attempt + 1}/${maxAttempts})`);
+                    continue;
+                }
+                log.warn(`[ai-retry] stream retries exhausted: bad prefix (${BAD_PREFIX_GOOGLE_SEARCH})`);
+                break;
+            }
+
+            break;
+        }
     } else {
         const result = await generateText(handeredParams);
         contentFull = `${result.reasoning ? `>\`Thought for several seconds\`\n>${(result.reasoningText ?? '').trim().replace(/\n/g, '\n>')}\n>✹\n` : ''}${result.text}`;
@@ -257,115 +406,8 @@ function thinkingExtractor(messageInfo: MessageInfo) {
     };
 }
 
-function extractGeneratedTextFromContent(content: unknown): string {
-    if (!Array.isArray(content)) {
-        return '';
-    }
-
-    return content
-        .filter(part => part && typeof part === 'object' && (part as any).type === 'text' && typeof (part as any).text === 'string')
-        .map(part => (part as any).text as string)
-        .join('');
-}
-
-function hasToolCallContent(content: unknown): boolean {
-    if (!Array.isArray(content)) {
-        return false;
-    }
-
-    return content.some(part => part && typeof part === 'object' && (part as any).type === 'tool-call');
-}
-
 async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV3; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepFinish: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
-    const maxRetriesRaw = Number(context.MAX_RETRIES ?? 0);
-    const maxRetries = Number.isFinite(maxRetriesRaw) ? Math.max(0, Math.trunc(maxRetriesRaw)) : 0;
-    const maxAttempts = Math.max(1, maxRetries + 1);
-
-    const wrappedModel = wrapLanguageModel({
-        model,
-        middleware,
-    });
-
-    const retryableModel = createRetryable({
-        model: wrappedModel,
-        disabled: maxRetries <= 0,
-        retries: [
-            // Result-based retry #1: empty response (0 tokens / empty text).
-            (retryContext) => {
-                if (!isResultAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { result } = retryContext.current;
-
-                // Don't treat tool-call steps as "empty responses".
-                if (hasToolCallContent(result.content)) {
-                    return undefined;
-                }
-
-                const text = extractGeneratedTextFromContent(result.content);
-                const hasZeroOutputTokens = result.usage?.outputTokens?.total === 0;
-                const isEmptyText = text.trim().length === 0;
-
-                if (hasZeroOutputTokens || isEmptyText) {
-                    return { model: retryContext.current.model, maxAttempts };
-                }
-
-                return undefined;
-            },
-
-            // Result-based retry #2: bad tool-call "print(google_search.search(" prefix.
-            (retryContext) => {
-                if (!isResultAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { result } = retryContext.current;
-
-                // If the model is actually calling tools, don't interfere.
-                if (hasToolCallContent(result.content)) {
-                    return undefined;
-                }
-
-                const text = extractGeneratedTextFromContent(result.content);
-
-                if (text.trimStart().startsWith('print(google_search.search(')) {
-                    return { model: retryContext.current.model, maxAttempts };
-                }
-
-                return undefined;
-            },
-
-            // Error-based retry with backoff + retry-after support (429/503/etc).
-            retryAfterDelay({ maxAttempts, delay: 1000, backoffFactor: 2 }),
-
-            // Generic error-based retry fallback (network errors, etc.).
-            (retryContext) => {
-                if (!isErrorAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { error } = retryContext.current;
-
-                // If the request was cancelled/timed out, retrying with the same abort signal
-                // will fail immediately. Keep the original behavior (no retry).
-                if (error instanceof Error && error.name === 'AbortError') {
-                    return undefined;
-                }
-
-                // Skip clearly non-retryable API errors (invalid request, auth, etc.).
-                if (APICallError.isInstance(error) && error.isRetryable === false) {
-                    return undefined;
-                }
-
-                return { model: retryContext.current.model, maxAttempts };
-            },
-        ],
-        onRetry: (retryContext) => {
-            const nextAttempt = retryContext.attempts.length + 1;
-            log.debug(`[ai-retry] retry attempt ${nextAttempt} for ${retryContext.current.model.provider}/${retryContext.current.model.modelId}`);
-        },
-    });
+    const retryableModel = createChatRetryableModel(wrapLanguageModel({ model, middleware }), context.MAX_RETRIES);
 
     const providerOptions = {
         openai: context.OPENAI_PROVIDER_OPTIONS,

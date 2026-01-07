@@ -45,11 +45,23 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 fetch: mockFetch(model_id, context, agent),
             }).languageModel(model_id) as LanguageModelV3;
         case 'google':
-            return createGoogleGenerativeAI({
+            const googleModel = createGoogleGenerativeAI({
                 baseURL: context.GOOGLE_API_BASE,
                 apiKey: context.GOOGLE_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
             }).languageModel(model_id) as LanguageModelV3;
+
+            // Google supports youtube urls and internal file urls, but not arbitrary external urls.
+            // (Gemini 2/3 model families)
+            if (googleModel.modelId.startsWith('gemini-2') || googleModel.modelId.startsWith('gemini-3')) {
+                googleModel.supportedUrls = {
+                    '*': [
+                        /^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/,
+                        /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/,
+                    ],
+                };
+            }
+            return googleModel;
         case 'cohere':
             return createCohere({
                 baseURL: context.COHERE_API_BASE,
