@@ -233,7 +233,6 @@ async function guardedStreamHandler(stream: AsyncIterable<any>, contentExtractor
                         const trimmedStart = assistantTextProbe.trimStart();
                         if (trimmedStart.startsWith(badPrefix)) {
                             detectedBadPrefix = true;
-                            await (stream as any)?.cancel?.('bad-prefix');
                             break;
                         }
 
@@ -279,6 +278,10 @@ async function guardedStreamHandler(stream: AsyncIterable<any>, contentExtractor
         detectedBadPrefix,
     };
 }
+
+export const __internal = {
+    guardedStreamHandler,
+};
 
 export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV3; toolModel?: LanguageModelV3; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
     // 引入多轮对话 拼接提示
