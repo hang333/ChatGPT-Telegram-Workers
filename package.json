@@ -56,6 +56,7 @@
         "@ffmpeg.wasm/main": "^0.13.1",
         "@modelcontextprotocol/sdk": "^1.15.0",
         "ai": "^6.0.0",
+        "ai-retry": "^1.0.1",
         "cf-worker-adapter": "^1.4.0",
         "node-cron": "^4.2.0"
     },

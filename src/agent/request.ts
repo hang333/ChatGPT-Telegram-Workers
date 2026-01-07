@@ -4,7 +4,9 @@ import type { ModelMessage, StepResult, TextStreamPart } from 'ai';
 import type { AgentUserConfig } from '../config/env';
 import type { MessageInfo, ToolChoice } from './model_middleware';
 import type { ChatStreamTextHandler, OpenAIFuncCallData, ResponseMessage } from './types';
-import { generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
+import { APICallError, generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
+import { createRetryable, isErrorAttempt, isResultAttempt } from 'ai-retry';
+import { retryAfterDelay } from 'ai-retry/retryables';
 import { ENV } from '../config/env';
 import { log } from '../log';
 import { SEGMENTATION_MARK } from '../telegram/utils/md2tgmd';
@@ -255,7 +257,116 @@ function thinkingExtractor(messageInfo: MessageInfo) {
     };
 }
 
+function extractGeneratedTextFromContent(content: unknown): string {
+    if (!Array.isArray(content)) {
+        return '';
+    }
+
+    return content
+        .filter(part => part && typeof part === 'object' && (part as any).type === 'text' && typeof (part as any).text === 'string')
+        .map(part => (part as any).text as string)
+        .join('');
+}
+
+function hasToolCallContent(content: unknown): boolean {
+    if (!Array.isArray(content)) {
+        return false;
+    }
+
+    return content.some(part => part && typeof part === 'object' && (part as any).type === 'tool-call');
+}
+
 async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV3; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepFinish: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
+    const maxRetriesRaw = Number(context.MAX_RETRIES ?? 0);
+    const maxRetries = Number.isFinite(maxRetriesRaw) ? Math.max(0, Math.trunc(maxRetriesRaw)) : 0;
+    const maxAttempts = Math.max(1, maxRetries + 1);
+
+    const wrappedModel = wrapLanguageModel({
+        model,
+        middleware,
+    });
+
+    const retryableModel = createRetryable({
+        model: wrappedModel,
+        disabled: maxRetries <= 0,
+        retries: [
+            // Result-based retry #1: empty response (0 tokens / empty text).
+            (retryContext) => {
+                if (!isResultAttempt(retryContext.current)) {
+                    return undefined;
+                }
+
+                const { result } = retryContext.current;
+
+                // Don't treat tool-call steps as "empty responses".
+                if (hasToolCallContent(result.content)) {
+                    return undefined;
+                }
+
+                const text = extractGeneratedTextFromContent(result.content);
+                const hasZeroOutputTokens = result.usage?.outputTokens?.total === 0;
+                const isEmptyText = text.trim().length === 0;
+
+                if (hasZeroOutputTokens || isEmptyText) {
+                    return { model: retryContext.current.model, maxAttempts };
+                }
+
+                return undefined;
+            },
+
+            // Result-based retry #2: bad tool-call "print(google_search.search(" prefix.
+            (retryContext) => {
+                if (!isResultAttempt(retryContext.current)) {
+                    return undefined;
+                }
+
+                const { result } = retryContext.current;
+
+                // If the model is actually calling tools, don't interfere.
+                if (hasToolCallContent(result.content)) {
+                    return undefined;
+                }
+
+                const text = extractGeneratedTextFromContent(result.content);
+
+                if (text.trimStart().startsWith('print(google_search.search(')) {
+                    return { model: retryContext.current.model, maxAttempts };
+                }
+
+                return undefined;
+            },
+
+            // Error-based retry with backoff + retry-after support (429/503/etc).
+            retryAfterDelay({ maxAttempts, delay: 1000, backoffFactor: 2 }),
+
+            // Generic error-based retry fallback (network errors, etc.).
+            (retryContext) => {
+                if (!isErrorAttempt(retryContext.current)) {
+                    return undefined;
+                }
+
+                const { error } = retryContext.current;
+
+                // If the request was cancelled/timed out, retrying with the same abort signal
+                // will fail immediately. Keep the original behavior (no retry).
+                if (error instanceof Error && error.name === 'AbortError') {
+                    return undefined;
+                }
+
+                // Skip clearly non-retryable API errors (invalid request, auth, etc.).
+                if (APICallError.isInstance(error) && error.isRetryable === false) {
+                    return undefined;
+                }
+
+                return { model: retryContext.current.model, maxAttempts };
+            },
+        ],
+        onRetry: (retryContext) => {
+            const nextAttempt = retryContext.attempts.length + 1;
+            log.debug(`[ai-retry] retry attempt ${nextAttempt} for ${retryContext.current.model.provider}/${retryContext.current.model.modelId}`);
+        },
+    });
+
     const providerOptions = {
         openai: context.OPENAI_PROVIDER_OPTIONS,
         anthropic: context.ANTHROPIC_PROVIDER_OPTIONS,
@@ -263,14 +374,13 @@ async function combineParams({ context, middleware, model, messages, activeTools
         xai: context.XAI_PROVIDER_OPTIONS,
     };
     return {
-        model: wrapLanguageModel({
-            model,
-            middleware,
-        }),
+        model: retryableModel,
         providerOptions,
         messages,
         experimental_continueSteps: context.CONTINUE_STEP,
-        maxRetries: context.MAX_RETRIES,
+        // Use ai-retry for retries (controlled by `MAX_RETRIES`) so we can support both
+        // error-based retries and custom result-based retries.
+        maxRetries: 0,
         temperature: (activeTools?.length || 0) > 0 ? context.FUNCTION_CALL_TEMPERATURE : context.CHAT_TEMPERATURE,
         tools,
         maxTokens: context.MAX_TOKENS,
