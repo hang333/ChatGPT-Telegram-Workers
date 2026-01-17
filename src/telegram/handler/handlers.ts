@@ -227,7 +227,8 @@ export class IntelligentModelProcess implements MessageHandler<WorkerContext> {
         }
 
         const regex = /^\s*\/\/([cvts])\s*(\S+)/;
-        const text = new RegExp(regex).exec((message.text || message.caption || '').trim());
+        const originalText = (message.text || message.caption || '').trim();
+        const text = new RegExp(regex).exec(originalText);
 
         if (!text?.[1] || !text[2])
             return null;
@@ -263,9 +264,9 @@ export class IntelligentModelProcess implements MessageHandler<WorkerContext> {
             }
             textReplace += ` ${similarityModel}`;
             if (message.text) {
-                message.text = textReplace + message.text.slice(text[0].length);
+                message.text = textReplace + originalText.slice(text[0].length);
             } else if (message.caption) {
-                message.caption = textReplace + message.caption.slice(text[0].length);
+                message.caption = textReplace + originalText.slice(text[0].length);
             }
             this.deleteTip(context, (await sendTipPromise).result);
         } catch (error) {
