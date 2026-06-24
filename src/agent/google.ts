@@ -249,6 +249,6 @@ function extractUrls(str: string): { data?: { type: string; url: string; mimeTyp
                 type: supportTypes[type]?.startsWith('image') ? 'image' : 'file',
             };
         }),
-        text: str.replace(urlRegex, '').trim(),
+        text: str.trim(),
     };
 }
