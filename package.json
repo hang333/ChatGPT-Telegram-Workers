@@ -74,7 +74,7 @@
         "eslint-plugin-format": "^1.0.1",
         "rollup-plugin-cleanup": "^3.2.1",
         "rollup-plugin-node-externals": "^8.0.1",
-        "telegram-bot-api-types": "^9.1.0",
+        "telegram-bot-api-types": "^10.0.0",
         "toml": "^3.0.0",
         "tsx": "^4.20.3",
         "typescript": "^5.8.3",

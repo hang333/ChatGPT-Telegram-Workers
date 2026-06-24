@@ -9,8 +9,8 @@ import type { UnionData } from '../utils/tg_utils';
 import type { MessageHandler } from './types';
 import { APICallError } from 'ai';
 import { loadASRLLM, loadChatLLM, loadImageGen, loadTTSLLM, TTS_AGENTS } from '../../agent';
-import { StreamRetryExhaustedError } from '../../agent/errors';
 import { loadHistory, requestCompletionsFromLLM } from '../../agent/chat';
+import { StreamRetryExhaustedError } from '../../agent/errors';
 import { ENV } from '../../config/env';
 import { clearLog, getLog, log } from '../../log';
 import { imageToBase64String } from '../../utils/image';
@@ -168,14 +168,18 @@ export function OnStreamHander(sender: MessageSender | ChosenInlineSender, conte
     const isMessageSender = sender instanceof MessageSender;
     const sendInterval = isMessageSender ? ENV.TELEGRAM_MIN_STREAM_INTERVAL : ENV.INLINE_QUERY_SEND_INTERVAL;
     let ended = false;
+    // Rich 模式原生支持长文/表格/标题，单条上限约 32768，仅在超出后才需降级到 Telegraph/文档
+    const RICH_MESSAGE_LIMIT = 32000;
     const isSendTelegraph = (text: string) => {
+        const telegraphLimit = ENV.SEND_RICH_MESSAGE ? Math.max(ENV.TELEGRAPH_NUM_LIMIT, RICH_MESSAGE_LIMIT) : ENV.TELEGRAPH_NUM_LIMIT;
         return isMessageSender
-            ? ENV.TELEGRAPH_SCOPE.includes(sender.context.chatType) && ENV.TELEGRAPH_NUM_LIMIT > 0 && text.length > ENV.TELEGRAPH_NUM_LIMIT
+            ? ENV.TELEGRAPH_SCOPE.includes(sender.context.chatType) && ENV.TELEGRAPH_NUM_LIMIT > 0 && text.length > telegraphLimit
             : sender.context.inline_message_id && text.length > 4096;
     };
 
     const isSendDocument = (text: string) => {
-        return ENV.FILE_SIZE_LIMIT > 0 && ENV.QUOTE_EXPANDABLE && text.length > ENV.ADD_QUOTE_LIMIT && text.length > ENV.FILE_SIZE_LIMIT;
+        const fileSizeLimit = ENV.SEND_RICH_MESSAGE ? Math.max(ENV.FILE_SIZE_LIMIT, RICH_MESSAGE_LIMIT) : ENV.FILE_SIZE_LIMIT;
+        return ENV.FILE_SIZE_LIMIT > 0 && ENV.QUOTE_EXPANDABLE && text.length > ENV.ADD_QUOTE_LIMIT && text.length > fileSizeLimit;
     };
     const addQuotePrerequisites = ENV.ADD_QUOTE_LIMIT > 0 && ENV.ADD_QUOTE_SCOPE.includes(sender.context.chatType);
     const expandParams = { addQuote: false, quoteExpandable: ENV.QUOTE_EXPANDABLE };

@@ -5,6 +5,7 @@ import type { ExpandParams } from './md2tgmd';
 import { ENV } from '../../config/env';
 import { log, tagMessageIds } from '../../log';
 import { createTelegramBotAPI } from '../api';
+import { normalizeCjkEmphasis } from './cjk_emphasis';
 import md2node from './md2node';
 import { chunkDocument, escape } from './md2tgmd';
 import { waitUntil } from './tg_utils';
@@ -82,6 +83,7 @@ export class MessageSender {
     }
 
     private async sendMessage(message: string, context: MessageContext): Promise<Response> {
+        const useRich = ENV.SEND_RICH_MESSAGE && context.parse_mode !== null;
         if (context?.message_id) {
             const params: Telegram.EditMessageTextParams = {
                 chat_id: context.chat_id,
@@ -89,6 +91,12 @@ export class MessageSender {
                 parse_mode: context.parse_mode || undefined,
                 text: message,
             };
+            if (useRich) {
+                // 富文本编辑：rich_message 负责渲染，text 作为旧客户端降级文本，
+                // 去掉 parse_mode 避免原始 Markdown 被按 MarkdownV2 解析
+                params.rich_message = { markdown: message };
+                params.parse_mode = undefined;
+            }
             if (context.disable_web_page_preview) {
                 params.link_preview_options = {
                     is_disabled: true,
@@ -96,6 +104,21 @@ export class MessageSender {
             }
             return this.api.editMessageText(params);
         } else {
+            if (useRich) {
+                const params: Telegram.SendRichMessageParams = {
+                    chat_id: context.chat_id,
+                    message_thread_id: context.message_thread_id || undefined,
+                    rich_message: { markdown: message },
+                };
+                if (context.reply_to_message_id) {
+                    params.reply_parameters = {
+                        message_id: context.reply_to_message_id,
+                        chat_id: context.chat_id,
+                        allow_sending_without_reply: context.allow_sending_without_reply || undefined,
+                    };
+                }
+                return this.api.sendRichMessage(params);
+            }
             const params: Telegram.SendMessageParams = {
                 chat_id: context.chat_id,
                 message_thread_id: context.message_thread_id || undefined,
@@ -120,7 +143,7 @@ export class MessageSender {
 
     private async sendLongMessage(message: string, context: MessageContext, expandParams?: ExpandParams): Promise<Response> {
         const chatContext = { ...context };
-        const messages = renderMessage(context.parse_mode, message, expandParams);
+        const messages = renderMessage(context.parse_mode, message, expandParams, true);
         let lastMessageResponse = null;
         let lastMessageRespJson = null;
         for (let i = 0; i < messages.length; i++) {
@@ -597,7 +620,12 @@ export class ChosenInlineSender {
     }
 }
 
-function renderMessage(parse_mode: Telegram.ParseMode | null, message: string, expandParams?: ExpandParams): string[] {
+function renderMessage(parse_mode: Telegram.ParseMode | null, message: string, expandParams?: ExpandParams, richCapable = false): string[] {
+    if (richCapable && ENV.SEND_RICH_MESSAGE && parse_mode !== null) {
+        // Rich 模式：直接发送原始 Markdown，无需转义；单条上限 32768，留余量按 32000 切块
+        const richText = ENV.RICH_CJK_EMPHASIS_FIX ? normalizeCjkEmphasis(message) : message;
+        return chunkDocument(richText, 32000);
+    }
     const chunkMessage = chunkDocument(message);
     if (parse_mode === 'MarkdownV2') {
         return chunkMessage.map(lines => escape(lines, expandParams));

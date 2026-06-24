@@ -39,7 +39,7 @@
         "eslint-plugin-format": "^1.0.1",
         "rollup-plugin-cleanup": "^3.2.1",
         "rollup-plugin-node-externals": "^8.0.1",
-        "telegram-bot-api-types": "^9.1.0",
+        "telegram-bot-api-types": "^10.0.0",
         "toml": "^3.0.0",
         "tsx": "^4.20.3",
         "typescript": "^5.8.3",
@@ -1534,7 +1534,7 @@
 
     "tar-stream": ["tar-stream@2.2.0", "", { "dependencies": { "bl": "^4.0.3", "end-of-stream": "^1.4.1", "fs-constants": "^1.0.0", "inherits": "^2.0.3", "readable-stream": "^3.1.1" } }, "sha512-ujeqbceABgwMZxEJnk2HDY2DlnUZ+9oEcb1KzTVfYHio0UE6dG71n60d8D2I4qNvleWrrXpmjpt7vZeF1LnMZQ=="],
 
-    "telegram-bot-api-types": ["telegram-bot-api-types@9.2.0", "", {}, "sha512-w85f8BKFahlvFTcGNlQjoAKGQIThoUaDnfOC+Wo9SVGUG2zVIl/lMW13elC8PFxdenCKCx2P6jvd6416yDZEbQ=="],
+    "telegram-bot-api-types": ["telegram-bot-api-types@10.0.0", "", {}, "sha512-J1Iz8ZcdVZ0QYSylUGc2rIWVBP8n2/WUldZIAYNYrMK1i6pOvx3YAIuEcCk5MYr4B4Bhdv9sp55dQQyOzYg5AQ=="],
 
     "time-span": ["time-span@4.0.0", "", { "dependencies": { "convert-hrtime": "^3.0.0" } }, "sha512-MyqZCTGLDZ77u4k+jqg4UlrzPTPZ49NDlaekU6uuFaJLzPIN1woaRXCbGeqOfxwc3Y37ZROGAJ614Rdv7Olt+g=="],
 

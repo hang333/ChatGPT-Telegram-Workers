@@ -80,6 +80,10 @@ GROUP_CHAT_BOT_ENABLE = 'true'
 ##
 ## 使用流模式
 #STREAM_MODE = 'true'
+## 使用 Bot API 10.1 Rich Messages 发送/编辑消息（需较新 Telegram 客户端，原生渲染表格/标题/公式等）
+#SEND_RICH_MESSAGE = 'false'
+## 修复中文强调渲染：紧贴全角标点的 **加粗**/*斜体* 因 CommonMark 规则失效，插入零宽空格修复（需 SEND_RICH_MESSAGE 开启）
+#RICH_CJK_EMPHASIS_FIX = 'true'
 ## 安全模式
 #SAFE_MODE = 'true'
 ## 调试模式

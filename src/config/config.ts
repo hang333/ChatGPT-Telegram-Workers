@@ -158,6 +158,12 @@ export class EnvironmentConfig {
     //
     // 使用流模式
     STREAM_MODE = true;
+    // 使用 Bot API 10.1 Rich Messages 发送/编辑消息（需较新 Telegram 客户端）。
+    // 开启后正文跳过 MarkdownV2 转义，直接以原始 Markdown 发送，原生渲染表格/标题/公式等；流式仍走 edit 方式。
+    SEND_RICH_MESSAGE = false;
+    // Rich 模式下修复中文强调渲染：紧贴全角标点的 **加粗**/*斜体* 因 CommonMark flanking 规则会失效，
+    // 通过在标记与标点间插入零宽空格修复。仅在 SEND_RICH_MESSAGE 开启时生效。
+    RICH_CJK_EMPHASIS_FIX = true;
     // 安全模式 异步模式（polling, 异步webhook）下可关闭
     SAFE_MODE = true;
     // 调试模式
