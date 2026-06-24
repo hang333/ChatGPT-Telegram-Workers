@@ -7,7 +7,8 @@ import { log, tagMessageIds } from '../../log';
 import { createTelegramBotAPI } from '../api';
 import { normalizeCjkEmphasis } from './cjk_emphasis';
 import md2node from './md2node';
-import { chunkDocument, escape } from './md2tgmd';
+import { chunkDocument, escape, SEGMENTATION_MARK } from './md2tgmd';
+import { foldRichExpandable } from './rich_quote';
 import { waitUntil } from './tg_utils';
 
 class MessageContext implements Record<string, any> {
@@ -622,16 +623,23 @@ export class ChosenInlineSender {
 
 function renderMessage(parse_mode: Telegram.ParseMode | null, message: string, expandParams?: ExpandParams, richCapable = false): string[] {
     if (richCapable && ENV.SEND_RICH_MESSAGE && parse_mode !== null) {
-        // Rich 模式：直接发送原始 Markdown，无需转义；单条上限 32768，留余量按 32000 切块
-        const richText = ENV.RICH_CJK_EMPHASIS_FIX ? normalizeCjkEmphasis(message) : message;
-        const chunks = chunkDocument(richText, 32000);
-        // 超长回答折叠：复用 ADD_QUOTE_LIMIT(触发) 与 QUOTE_EXPANDABLE(是否折叠)。
-        // 用 <details> 折叠块（其内部 Markdown 会正常渲染，而 <blockquote> 内不会）；
-        // 仅在单块时包裹，避免折叠标签被切块拆散。
-        if (chunks.length === 1 && expandParams?.addQuote && expandParams.quoteExpandable) {
-            return [wrapRichExpandable(chunks[0])];
+        // Rich 模式：直接发送原始 Markdown，无需转义；单条上限 32768，留余量按 32000 切块。
+        // 折叠：复用 ADD_QUOTE_LIMIT(触发) 与 QUOTE_EXPANDABLE(是否折叠)，仅折叠正文，
+        // 日志（模型/耗时/token）保留在折叠块外可见；用 <details>（其内部 Markdown 正常渲染）。
+        if (expandParams?.addQuote && expandParams.quoteExpandable) {
+            const folded = foldRichExpandable(message, {
+                logOnTop: ENV.LOG_POSITION_ON_TOP,
+                summary: '完整内容',
+                cjkFix: richCjkFix,
+            });
+            const chunks = chunkDocument(folded, 32000);
+            // 仅单块时保留折叠，避免 <details> 标签被切块拆散；超长则回退到平铺
+            if (chunks.length === 1) {
+                return chunks;
+            }
         }
-        return chunks;
+        // 平铺：移除正文与日志之间的内部分隔标记（rich 路径不经过 escape，需在此显式清理）
+        return chunkDocument(richCjkFix(message.replaceAll(SEGMENTATION_MARK, '')), 32000);
     }
     const chunkMessage = chunkDocument(message);
     if (parse_mode === 'MarkdownV2') {
@@ -640,8 +648,7 @@ function renderMessage(parse_mode: Telegram.ParseMode | null, message: string, e
     return chunkMessage;
 }
 
-// Rich 模式下用 <details> 折叠块收纳超长回答（默认收起、点击展开，内部 Markdown 正常渲染）
-const RICH_EXPANDABLE_SUMMARY = '完整内容';
-function wrapRichExpandable(text: string): string {
-    return `<details><summary>${RICH_EXPANDABLE_SUMMARY}</summary>\n\n${text}\n\n</details>`;
+// Rich 模式下按需对文本做 CJK 强调修复（折叠正文与外置日志共用）
+function richCjkFix(text: string): string {
+    return ENV.RICH_CJK_EMPHASIS_FIX ? normalizeCjkEmphasis(text) : text;
 }
