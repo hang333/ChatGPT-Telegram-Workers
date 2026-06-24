@@ -624,11 +624,24 @@ function renderMessage(parse_mode: Telegram.ParseMode | null, message: string, e
     if (richCapable && ENV.SEND_RICH_MESSAGE && parse_mode !== null) {
         // Rich 模式：直接发送原始 Markdown，无需转义；单条上限 32768，留余量按 32000 切块
         const richText = ENV.RICH_CJK_EMPHASIS_FIX ? normalizeCjkEmphasis(message) : message;
-        return chunkDocument(richText, 32000);
+        const chunks = chunkDocument(richText, 32000);
+        // 超长回答折叠：复用 ADD_QUOTE_LIMIT(触发) 与 QUOTE_EXPANDABLE(是否折叠)。
+        // 用 <details> 折叠块（其内部 Markdown 会正常渲染，而 <blockquote> 内不会）；
+        // 仅在单块时包裹，避免折叠标签被切块拆散。
+        if (chunks.length === 1 && expandParams?.addQuote && expandParams.quoteExpandable) {
+            return [wrapRichExpandable(chunks[0])];
+        }
+        return chunks;
     }
     const chunkMessage = chunkDocument(message);
     if (parse_mode === 'MarkdownV2') {
         return chunkMessage.map(lines => escape(lines, expandParams));
     }
     return chunkMessage;
+}
+
+// Rich 模式下用 <details> 折叠块收纳超长回答（默认收起、点击展开，内部 Markdown 正常渲染）
+const RICH_EXPANDABLE_SUMMARY = '完整内容';
+function wrapRichExpandable(text: string): string {
+    return `<details><summary>${RICH_EXPANDABLE_SUMMARY}</summary>\n\n${text}\n\n</details>`;
 }
