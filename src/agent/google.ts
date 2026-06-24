@@ -205,7 +205,7 @@ export function handleUrl(messages: UserModelMessage): UserModelMessage {
             });
             data.forEach(i => newMessage.push({
                 type: i.type as 'image' | 'file',
-                [i.type === 'image' ? 'url' : 'data']: i.url,
+                [i.type === 'image' ? 'image' : 'data']: i.url,
                 mediaType: i.mimeType,
             } as unknown as FilePart | ImagePart));
             messages.content = newMessage;
