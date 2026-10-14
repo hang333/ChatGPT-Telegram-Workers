@@ -4,19 +4,19 @@ export default function ClosePlugin() {
 
         // use this to catch errors when building
         buildEnd(error) {
-            if(error) {
-                console.error('Error bundling')
-                console.error(error)
-                process.exit(1)
+            if (error) {
+                console.error('Error bundling');
+                console.error(error);
+                process.exit(1);
             } else {
-                console.log('Build ended')
+                console.log('Build ended');
             }
         },
 
         // use this to catch the end of a build without errors
         closeBundle(id) {
-            console.log('Bundle closed')
-            process.exit(0)
+            console.log('Bundle closed');
+            process.exit(0);
         },
-    }
+    };
 }

@@ -74,7 +74,6 @@ class AsyncQueue<T> {
 
 // 单个 token 的 worker：从队列里取更新并发执行 handleUpdate
 async function workerLoop(token: string, queue: AsyncQueue<Update>, workerId: number) {
-    // eslint-disable-next-line no-constant-condition
     while (true) {
         const update = await queue.pop();
         try {
@@ -96,10 +95,10 @@ async function pollToken(token: string) {
     }
     const url = `${baseURL}/bot${token}/getUpdates`;
 
-    const LONG_POLL_TIMEOUT_SEC = 30;   // Telegram 长轮询超时（服务器）
-    const HTTP_TIMEOUT_MS = 60_000;     // 本地 HTTP 超时保护
-    const ERROR_BACKOFF_MS = 5_000;     // 出错后的退避时间
-    const MAX_CONCURRENT_HANDLERS = 5;  // 并行处理的 worker 数量，可按需调整
+    const LONG_POLL_TIMEOUT_SEC = 30; // Telegram 长轮询超时（服务器）
+    const HTTP_TIMEOUT_MS = 60_000; // 本地 HTTP 超时保护
+    const ERROR_BACKOFF_MS = 5_000; // 出错后的退避时间
+    const MAX_CONCURRENT_HANDLERS = 5; // 并行处理的 worker 数量，可按需调整
 
     console.log(`[poll] start polling for token ${token.slice(0, 8)}...`);
 
@@ -111,7 +110,7 @@ async function pollToken(token: string) {
     }
 
     // 仅负责拉取更新并入队
-    // eslint-disable-next-line no-constant-condition
+
     while (true) {
         try {
             const body = {
