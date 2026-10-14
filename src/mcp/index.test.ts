@@ -1,7 +1,7 @@
 import { createMCPClient } from '@ai-sdk/mcp';
 import { Experimental_StdioMCPTransport as MCPStdioTransport } from '@ai-sdk/mcp/mcp-stdio';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { stepCountIs, streamText } from 'ai';
+import { isStepCount, streamText } from 'ai';
 
 let mcpClient;
 
@@ -32,7 +32,7 @@ try {
             apiKey: process.env.API_KEY!,
             name: 'oailike',
         }).languageModel('gemini-2.5-pro'),
-        stopWhen: stepCountIs(10),
+        stopWhen: isStepCount(10),
         tools: await mcpClient.tools(),
         prompt: '上海虹桥站到东方明珠最快路径 开车前往 我不知道经纬度 请使用工具后告诉我最快捷路线',
     });

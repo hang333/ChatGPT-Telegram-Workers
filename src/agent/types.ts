@@ -106,5 +106,3 @@ export interface GeneratedImage {
     base64: string;
     uint8Array: Uint8Array;
 }
-
-export type GoogleVertexImageModelId = 'imagen-3.0-fast-generate-001' | 'imagen-3.0-generate-001';

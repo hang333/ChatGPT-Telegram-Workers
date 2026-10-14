@@ -1,5 +1,5 @@
 /* eslint-disable unused-imports/no-unused-vars */
-import type { ModelMessage, TextPart } from 'ai';
+import type { ModelMessage } from 'ai';
 import type { WorkerContext } from '../config/context';
 import type { AgentUserConfig } from '../config/env';
 import type { ChatAgent, ChatStreamTextHandler, HistoryItem, HistoryModifier, LLMChatParams, LLMChatRequestParams, ResponseMessage } from './types';
@@ -181,7 +181,7 @@ function extractResultText(result: { messages: ResponseMessage[]; content: strin
             }
             return '';
         }).join('\n')
-            || result.content.slice(llmParams.cache?.join().length || 0);
+        || result.content.slice(llmParams.cache?.join().length || 0);
     }
     return lastMessage.content;
 };

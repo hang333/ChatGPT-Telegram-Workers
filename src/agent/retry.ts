@@ -1,7 +1,7 @@
-import type { LanguageModelV3 } from '@ai-sdk/provider';
+import type { LanguageModelV4 } from '@ai-sdk/provider';
 import { APICallError } from 'ai';
-import { createRetryable, isErrorAttempt, isResultAttempt } from 'ai-retry';
-import { retryAfterDelay } from 'ai-retry/retryables';
+import { isResultAttempt } from 'ai-retry';
+import { createRetryableModel, error, result } from 'ai-retry/language-model';
 import { log } from '../log';
 
 export const BAD_PREFIX_GOOGLE_SEARCH = 'print(google_search.search(';
@@ -41,90 +41,38 @@ export function isBadPrefixResponseText(text: string): boolean {
     return text.trimStart().startsWith(BAD_PREFIX_GOOGLE_SEARCH);
 }
 
-export function createChatRetryableModel(model: LanguageModelV3, maxRetries: unknown): LanguageModelV3 {
+export function createChatRetryableModel(model: LanguageModelV4, maxRetries: unknown): LanguageModelV4 {
     const maxRetriesNormalized = normalizeMaxRetries(maxRetries);
-    const maxAttempts = Math.max(1, maxRetriesNormalized + 1);
+    // `Condition.retry()` rejects maxAttempts < 2, so skip wrapping entirely when retries are off.
+    if (maxRetriesNormalized <= 0) {
+        return model;
+    }
+    const maxAttempts = maxRetriesNormalized + 1;
 
-    return createRetryable({
+    // Result-based retries only judge plain-text steps; tool-call steps are left alone.
+    const textResult = (predicate: (text: string, outputTokens: number | undefined) => boolean) =>
+        result(res => !hasToolCallContent(res.content) && predicate(extractGeneratedTextFromContent(res.content), res.usage?.outputTokens?.total));
+
+    return createRetryableModel({
         model,
-        disabled: maxRetriesNormalized <= 0,
         retries: [
-            // Result-based retry #1: empty response (0 tokens / empty text).
-            (retryContext) => {
-                if (!isResultAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { result } = retryContext.current;
-
-                // Don't treat tool-call steps as "empty responses".
-                if (hasToolCallContent(result.content)) {
-                    return undefined;
-                }
-
-                const text = extractGeneratedTextFromContent(result.content);
-                const hasZeroOutputTokens = result.usage?.outputTokens?.total === 0;
-
-                if (hasZeroOutputTokens || isEmptyResponseText(text)) {
-                    log.info(`[ai-retry] retry on empty response from ${retryContext.current.model.provider}/${retryContext.current.model.modelId}`);
-                    return { model: retryContext.current.model, maxAttempts };
-                }
-
-                return undefined;
-            },
-
-            // Result-based retry #2: bad "print(google_search.search(" prefix.
-            (retryContext) => {
-                if (!isResultAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { result } = retryContext.current;
-
-                // If the model is actually calling tools, don't interfere.
-                if (hasToolCallContent(result.content)) {
-                    return undefined;
-                }
-
-                const text = extractGeneratedTextFromContent(result.content);
-
-                if (isBadPrefixResponseText(text)) {
-                    log.info(`[ai-retry] retry on bad prefix response from ${retryContext.current.model.provider}/${retryContext.current.model.modelId}`);
-                    return { model: retryContext.current.model, maxAttempts };
-                }
-
-                return undefined;
-            },
-
-            // Error-based retry with backoff + retry-after support (429/503/etc).
-            retryAfterDelay({ maxAttempts, delay: 1000, backoffFactor: 2 }),
-
-            // Generic error-based retry fallback (network errors, etc.).
-            (retryContext) => {
-                if (!isErrorAttempt(retryContext.current)) {
-                    return undefined;
-                }
-
-                const { error } = retryContext.current;
-
-                // If the request was cancelled/timed out, retrying with the same abort signal
-                // will fail immediately. Keep the original behavior (no retry).
-                if (error instanceof Error && error.name === 'AbortError') {
-                    return undefined;
-                }
-
-                // Skip clearly non-retryable API errors (invalid request, auth, etc.).
-                if (APICallError.isInstance(error) && error.isRetryable === false) {
-                    return undefined;
-                }
-
-                return { model: retryContext.current.model, maxAttempts };
-            },
+            // Empty response (0 tokens / empty text).
+            textResult((text, outputTokens) => outputTokens === 0 || isEmptyResponseText(text)).retry({ maxAttempts }),
+            // Bad "print(google_search.search(" prefix.
+            textResult(isBadPrefixResponseText).retry({ maxAttempts }),
+            // Retryable API errors (429/503/etc.) with backoff; honors Retry-After headers.
+            error.isRetryable(true).retry({ maxAttempts, delay: 1000, backoffFactor: 2 }),
+            // Generic fallback (network errors, etc.). Retrying a manual abort would fail immediately
+            // with the same signal, and non-retryable API errors (invalid request, auth...) won't recover.
+            error(err => !isAbortError(err) && !(APICallError.isInstance(err) && !err.isRetryable)).retry({ maxAttempts }),
         ],
-        onRetry: (retryContext) => {
-            const nextAttempt = retryContext.attempts.length + 1;
-            log.debug(`[ai-retry] retry attempt ${nextAttempt} for ${retryContext.current.model.provider}/${retryContext.current.model.modelId}`);
+        onRetry: ({ current, attempts }) => {
+            const reason = isResultAttempt(current) ? 'bad result' : `error: ${(current.error as Error)?.message ?? current.error}`;
+            log.info(`[ai-retry] retry attempt ${attempts.length + 1}/${maxAttempts} for ${current.model.provider}/${current.model.modelId} (${reason})`);
         },
-    }) as unknown as LanguageModelV3;
+    });
 }
 
+function isAbortError(err: unknown): boolean {
+    return err instanceof Error && err.name === 'AbortError';
+}

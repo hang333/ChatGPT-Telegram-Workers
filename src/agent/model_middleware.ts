@@ -1,6 +1,6 @@
 /* eslint-disable no-case-declarations */
 /* eslint-disable unused-imports/no-unused-vars */
-import type { LanguageModelV3, LanguageModelV3CallOptions, LanguageModelV3Prompt } from '@ai-sdk/provider';
+import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4Prompt } from '@ai-sdk/provider';
 import type { ModelMessage, StepResult, TextStreamPart, ToolCallPart, ToolResultPart } from 'ai';
 import type { AgentUserConfig } from '../config/env';
 import type { LogStruct } from '../log';
@@ -13,8 +13,11 @@ import {
 import { ENV } from '../config/env';
 import { getLogSingleton, log } from '../log';
 import { getTools, sendToolResult, validTools } from '../tools';
-import { createLlmModel, getGoogleBuiltinTools } from './llm';
+import { createLlmModel, geminiGeneration, getGoogleBuiltinTools } from './llm';
 import { createChatRetryableModel } from './retry';
+
+// The chunk types `onChunk` received before AI SDK 7
+const CONTENT_CHUNK_TYPES = new Set<TextStreamPart<any>['type']>(['text-delta', 'reasoning-delta', 'source', 'tool-call', 'tool-input-start', 'tool-input-delta', 'tool-result', 'custom', 'raw']);
 
 type Writeable<T> = { -readonly [P in keyof T as P extends 'modelId' ? P : never]: T[P] };
 export interface MessageInfo {
@@ -30,7 +33,7 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
     const tools = await getTools();
     let hasRecordFirstChunkTime = false;
     let record: LogStruct;
-    let currentModel: LanguageModelV3;
+    let currentModel: LanguageModelV4;
     // chunk内容修改导致收集的message一并修改，暂恢复原think处理逻辑
     // const thinkingTag = '>`Thinking\\.\\.\\.`';
     // let thinkingStart = false;
@@ -67,7 +70,7 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
     // };
 
     return {
-        prepareStepPre: (middleware: any) => async ({ model, stepNumber, steps }: { model: LanguageModelV3; stepNumber: number; steps: StepResult<any>[] }) => {
+        prepareStepPre: (middleware: any) => async ({ model, stepNumber, steps }: { model: LanguageModelV4; stepNumber: number; steps: StepResult<any>[] }) => {
             currentModel = model;
             if (activeTools.length > 0) {
                 // (model as Writeable<LanguageModelV2>).modelId = config.TOOL_MODEL;
@@ -85,15 +88,15 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
             };
         },
 
-        wrapGenerate: async ({ doGenerate, params, model }: { doGenerate: () => Promise<any>; params: any; model: LanguageModelV3 }) => {
+        wrapGenerate: async ({ doGenerate, params, model }: { doGenerate: () => Promise<any>; params: any; model: LanguageModelV4 }) => {
             return extractReasoning.wrapGenerate!({ doGenerate, doStream: () => model.doStream(params), params, model });
         },
 
-        wrapStream: async ({ doStream, params, model }: { doStream: () => Promise<any>; params: any; model: LanguageModelV3 }) => {
+        wrapStream: async ({ doStream, params, model }: { doStream: () => Promise<any>; params: any; model: LanguageModelV4 }) => {
             return extractReasoning.wrapStream!({ doStream, doGenerate: () => model.doGenerate(params), params, model });
         },
 
-        transformParams: async ({ type, params }: { type: 'generate' | 'stream'; params: LanguageModelV3CallOptions }) => {
+        transformParams: async ({ type, params }: { type: 'generate' | 'stream'; params: LanguageModelV4CallOptions }) => {
             log.info(`start ${type} call`);
 
             // transform tool choice
@@ -121,6 +124,10 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
         },
 
         onChunk: ({ chunk }: { chunk: TextStreamPart<any> }) => {
+            // AI SDK 7 also emits lifecycle parts (start, start-step, finish...) here, possibly before `record` exists
+            if (!CONTENT_CHUNK_TYPES.has(chunk.type)) {
+                return;
+            }
             if (!hasRecordFirstChunkTime) {
                 record.first_chunk_time = Date.now() - record.start_time;
                 hasRecordFirstChunkTime = true;
@@ -132,7 +139,7 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
             }
         },
 
-        onStepFinish: async ({ text, toolResults, usage, request, response, finishReason }: StepResult<any>) => {
+        onStepEnd: async ({ text, toolResults, usage, request, response, finishReason }: StepResult<any>) => {
             log.info('llm request end');
             log.debug('step text:', text);
             log.debug('step raw request:', request);
@@ -170,8 +177,8 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
                 record.tokens = {
                     prompt: usage.inputTokens,
                     completion: usage.outputTokens,
-                    reasoning: usage.reasoningTokens,
-                    cached: usage.cachedInputTokens,
+                    reasoning: usage.outputTokenDetails?.reasoningTokens,
+                    cached: usage.inputTokenDetails?.cacheReadTokens,
                 };
                 log.info(`tokens: ${JSON.stringify(usage)}`);
             } else {
@@ -186,7 +193,7 @@ export async function AIMiddleware({ config, activeTools, onStream, toolChoice, 
 }
 
 function warpMessages(
-    params: LanguageModelV3CallOptions,
+    params: LanguageModelV4CallOptions,
     allTools: Record<string, any>,
     activeTools: string[],
     isResponseApi: boolean,
@@ -278,16 +285,16 @@ function warpMessages(
     isResponseApi && (params.prompt = handleResponseApiMessage(messages));
 }
 
-function warpModel(model: LanguageModelV3, config: AgentUserConfig, activeTools: string[], toolChoice: ToolChoice, chatModel: string) {
-    const mutableModel = model as Writeable<LanguageModelV3>;
+function warpModel(model: LanguageModelV4, config: AgentUserConfig, activeTools: string[], toolChoice: ToolChoice, chatModel: string) {
+    const mutableModel = model as Writeable<LanguageModelV4>;
     const effectiveModel = (activeTools.length > 0 && toolChoice?.type !== 'none') ? (config.TOOL_MODEL || chatModel) : chatModel;
     if (effectiveModel !== mutableModel.modelId) {
-        let newModel: LanguageModelV3 | undefined;
+        let newModel: LanguageModelV4 | undefined;
         mutableModel.modelId = newModel?.modelId ?? effectiveModel;
     }
 }
 
-export async function warpLLMParams({ messages, model, cache }: { messages: ModelMessage[]; model: LanguageModelV3; cache?: string[] }, context: AgentUserConfig) {
+export async function warpLLMParams({ messages, model, cache }: { messages: ModelMessage[]; model: LanguageModelV4; cache?: string[] }, context: AgentUserConfig) {
     const allTools = await getTools();
     const userMessage = messages.findLast(m => m.role === 'user')!;
     // support text message and text part
@@ -306,8 +313,8 @@ export async function warpLLMParams({ messages, model, cache }: { messages: Mode
         const googleTools = getGoogleBuiltinTools(context);
         tools = { ...tools, ...googleTools };
     }
-    // Only Gemini 2/3 support google_buildin tool activation via LLM
-    if (!model.modelId.startsWith('gemini-2') && !model.modelId.startsWith('gemini-3')) {
+    // Only Gemini 2+ support google_buildin tool activation via LLM
+    if (geminiGeneration(model.modelId) < 2) {
         activeTools = activeTools.filter(t => t !== 'google_buildin');
         delete (tools as any).google_buildin;
     }
@@ -372,7 +379,7 @@ function trimActiveTools(activeTools: string[], toolNames: string[]) {
     return activeTools.length > 0 ? activeTools.filter(name => !toolNames.includes(name)) : [];
 }
 
-function recordModelLog({ config, model, record }: { config: AgentUserConfig; model: LanguageModelV3; record: LogStruct }) {
+function recordModelLog({ config, model, record }: { config: AgentUserConfig; model: LanguageModelV4; record: LogStruct }) {
     log.info(`provider: ${model.provider}, modelId: ${model.modelId} `);
     record.start_time = Date.now();
     record.model = model.modelId;
@@ -474,7 +481,7 @@ async function handleToolResult({ tools, toolResults, onStream, config }: { tool
     }
 }
 
-function handleResponseApiMessage(messages: LanguageModelV3Prompt) {
+function handleResponseApiMessage(messages: LanguageModelV4Prompt) {
     // Issue: When the message contains inference messages, tool calls and tool results do not contain ref_id.
     // https://github.com/vercel/ai/issues/7099
     // temporary fix: remove reasoning text

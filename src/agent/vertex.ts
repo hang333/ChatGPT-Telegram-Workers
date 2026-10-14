@@ -1,9 +1,8 @@
-import type { ImageModelV2 } from '@ai-sdk/provider';
 import type { UserModelMessage } from 'ai';
 import type { AgentUserConfig } from '../config/env';
-import type { ChatAgent, ChatStreamTextHandler, GeneratedImage, GoogleVertexImageModelId, ImageAgent, ImageResult, LLMChatParams, LLMChatRequestParams, ResponseMessage } from './types';
+import type { ChatAgent, ChatStreamTextHandler, GeneratedImage, ImageAgent, ImageResult, LLMChatParams, LLMChatRequestParams, ResponseMessage } from './types';
 import { createVertex } from '@ai-sdk/google-vertex';
-import { experimental_generateImage as generateImage } from 'ai';
+import { generateImage } from 'ai';
 import { Logger } from '../log';
 import { handleUrl } from './google';
 import { createLlmModel } from './llm';
@@ -59,7 +58,7 @@ export class VertexImage extends VertexBase implements ImageAgent {
                 googleAuthOptions: {
                     credentials: context.VERTEX_CREDENTIALS,
                 },
-            }).image(this.model(context) as GoogleVertexImageModelId) as unknown as ImageModelV2,
+            }).image(this.model(context)),
             prompt,
             n,
             providerOptions: {

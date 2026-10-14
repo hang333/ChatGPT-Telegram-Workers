@@ -1,10 +1,10 @@
 /* eslint-disable no-case-declarations */
-import type { LanguageModelV3 } from '@ai-sdk/provider';
-import type { ModelMessage, StepResult, TextStreamPart } from 'ai';
+import type { LanguageModelV4 } from '@ai-sdk/provider';
+import type { ModelMessage, StepResult, SystemModelMessage, TextStreamPart } from 'ai';
 import type { AgentUserConfig } from '../config/env';
 import type { MessageInfo, ToolChoice } from './model_middleware';
 import type { ChatStreamTextHandler, OpenAIFuncCallData, ResponseMessage } from './types';
-import { generateText, stepCountIs, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
+import { generateText, isStepCount, streamText, TypeValidationError, wrapLanguageModel } from 'ai';
 import { ENV } from '../config/env';
 import { getLogSingleton, log, popLog } from '../log';
 import { SEGMENTATION_MARK } from '../telegram/utils/md2tgmd';
@@ -284,13 +284,13 @@ export const __internal = {
     guardedStreamHandler,
 };
 
-export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV3; toolModel?: LanguageModelV3; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
+export async function requestChatCompletionsV2({ model, messages, tools, activeTools, toolChoice, context, cache }: { model: LanguageModelV4; toolModel?: LanguageModelV4; prompt?: string; messages: ModelMessage[]; tools?: any; activeTools: string[]; toolChoice?: ToolChoice[] | undefined; context: AgentUserConfig; cache?: string[] }, onStream: ChatStreamTextHandler | null): Promise<{ messages: ResponseMessage[]; content: string }> {
     // 引入多轮对话 拼接提示
     const messageInfo: MessageInfo = {
         content: cache?.join() ?? '',
         occured_error: false,
     };
-    const { prepareStepPre, onStepFinish, onChunk, ...middleware } = await AIMiddleware({
+    const { prepareStepPre, onStepEnd, onChunk, ...middleware } = await AIMiddleware({
         config: context,
         activeTools,
         onStream,
@@ -299,7 +299,7 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
         messageInfo,
     });
 
-    const handeredParams = await combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk });
+    const handeredParams = await combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepEnd, onChunk });
 
     let responseMessages: ResponseMessage[] = [];
     let contentFull = '';
@@ -323,15 +323,15 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
             const stream = streamText(handeredParams);
             const dataExtractor = thinkingExtractor(messageInfo);
 
-            const guarded = await guardedStreamHandler(stream.fullStream, dataExtractor, onStream, messageInfo);
+            const guarded = await guardedStreamHandler(stream.stream, dataExtractor, onStream, messageInfo);
 
             const shouldRetryEmpty = !guarded.sawToolCall && !messageInfo.occured_error && !guarded.assistantHasNonWhitespaceText;
             const shouldRetryBadPrefix = !guarded.sawToolCall && !messageInfo.occured_error
                 && (guarded.detectedBadPrefix || isBadPrefixResponseText(guarded.assistantTextProbe));
 
             if (shouldRetryEmpty) {
-                void Promise.resolve(stream.response).catch(() => { });
-                void Promise.resolve(stream.providerMetadata).catch(() => { });
+                void Promise.resolve(stream.finalStep).catch(() => { });
+                void Promise.resolve(stream.responseMessages).catch(() => { });
                 if (attempt < maxAttempts) {
                     log.info(`[ai-retry] stream retry on empty response (${attempt + 1}/${maxAttempts})`);
                     continue;
@@ -350,8 +350,8 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
             }
 
             if (shouldRetryBadPrefix) {
-                void Promise.resolve(stream.response).catch(() => { });
-                void Promise.resolve(stream.providerMetadata).catch(() => { });
+                void Promise.resolve(stream.finalStep).catch(() => { });
+                void Promise.resolve(stream.responseMessages).catch(() => { });
                 if (attempt < maxAttempts) {
                     log.info(`[ai-retry] stream retry on bad prefix (${attempt + 1}/${maxAttempts})`);
                     continue;
@@ -373,17 +373,19 @@ export async function requestChatCompletionsV2({ model, messages, tools, activeT
             if (messageInfo.occured_error) {
                 responseMessages = [{ role: 'assistant', content: contentFull }];
             } else {
-                responseMessages = (await stream.response).messages;
-                contentFull = metaDataExtractor(await stream.providerMetadata, model.provider, contentFull);
+                // `responseMessages` accumulates all steps (step `response.messages` no longer does in AI SDK 7)
+                responseMessages = await stream.responseMessages;
+                contentFull = metaDataExtractor((await stream.finalStep).providerMetadata, model.provider, contentFull);
             }
 
             break;
         }
     } else {
         const result = await generateText(handeredParams);
-        contentFull = `${result.reasoning ? `>\`Thought for several seconds\`\n>${(result.reasoningText ?? '').trim().replace(/\n/g, '\n>')}\n>✹\n` : ''}${result.text}`;
-        responseMessages = result.response.messages;
-        contentFull = metaDataExtractor(result.providerMetadata, model.provider, contentFull);
+        const { reasoningText, providerMetadata } = result.finalStep;
+        contentFull = `${reasoningText ? `>\`Thought for several seconds\`\n>${reasoningText.trim().replace(/\n/g, '\n>')}\n>✹\n` : ''}${result.text}`;
+        responseMessages = result.responseMessages;
+        contentFull = metaDataExtractor(providerMetadata, model.provider, contentFull);
     }
 
     return { messages: responseMessages, content: contentFull };
@@ -430,7 +432,7 @@ function thinkingExtractor(messageInfo: MessageInfo) {
     };
 }
 
-async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepFinish, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV3; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepFinish: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
+async function combineParams({ context, middleware, model, messages, activeTools, tools, prepareStepPre, onStepEnd, onChunk }: { context: AgentUserConfig; middleware: any; model: LanguageModelV4; messages: ModelMessage[]; activeTools: string[]; tools: any; prepareStepPre: (middleware: (...args: any[]) => any) => any; onStepEnd: (data: StepResult<any>) => void; onChunk: (data: { chunk: TextStreamPart<any> }) => void }) {
     const retryableModel = createChatRetryableModel(wrapLanguageModel({ model, middleware }), context.MAX_RETRIES);
 
     const providerOptions = {
@@ -446,21 +448,25 @@ async function combineParams({ context, middleware, model, messages, activeTools
     const aiSdkActiveTools = tools && typeof tools === 'object'
         ? Object.keys(tools)
         : [];
+    // AI SDK 7 rejects system messages inside `messages`; pass them as `instructions` instead.
+    const systemMessages = messages.filter((m): m is SystemModelMessage => m.role === 'system');
     return {
         model: retryableModel,
         providerOptions,
-        messages,
-        experimental_continueSteps: context.CONTINUE_STEP,
+        ...(systemMessages.length > 0 && { instructions: systemMessages }),
+        messages: messages.filter(m => m.role !== 'system'),
         // Use ai-retry for retries (controlled by `MAX_RETRIES`) so we can support both
         // error-based retries and custom result-based retries.
         maxRetries: 0,
         temperature: (activeTools?.length || 0) > 0 ? context.FUNCTION_CALL_TEMPERATURE : context.CHAT_TEMPERATURE,
         tools,
-        maxTokens: context.MAX_TOKENS,
+        maxOutputTokens: context.MAX_TOKENS,
         ...(aiSdkActiveTools.length > 0 ? { activeTools: aiSdkActiveTools } : {}),
         prepareStep: prepareStepPre(middleware),
-        stopWhen: stepCountIs(context.MAX_STEPS),
-        onStepFinish,
+        stopWhen: isStepCount(context.MAX_STEPS),
+        // AI SDK 7 omits request bodies from step results by default; keep them for the debug log
+        include: { requestBody: ENV.LOG_LEVEL === 'debug' },
+        onStepEnd,
         onChunk,
         ...(ENV.CHAT_TOTAL_DURATION_LIMIT > 0 && { abortSignal: AbortSignal.timeout(ENV.CHAT_TOTAL_DURATION_LIMIT * 1e3) }),
     };

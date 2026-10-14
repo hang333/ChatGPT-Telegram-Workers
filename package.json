@@ -19,6 +19,9 @@
     "files": [
         "dist"
     ],
+    "engines": {
+        "node": ">=22"
+    },
     "scripts": {
         "lint": "eslint --fix *.js *.ts src plugins scripts",
         "build": "vite build",
@@ -40,23 +43,23 @@
         "clean": "rm -rf dist"
     },
     "dependencies": {
-        "@ai-sdk/anthropic": "^3.0.0",
-        "@ai-sdk/azure": "^3.0.0",
-        "@ai-sdk/cohere": "^3.0.0",
-        "@ai-sdk/google": "^3.0.0",
-        "@ai-sdk/google-vertex": "^3.0.0",
-        "@ai-sdk/mcp": "^1.0.1",
-        "@ai-sdk/mistral": "^3.0.0",
-        "@ai-sdk/openai": "^3.0.0",
-        "@ai-sdk/openai-compatible": "^2.0.1",
-        "@ai-sdk/provider": "^3.0.0",
-        "@ai-sdk/provider-utils": "^4.0.0",
-        "@ai-sdk/xai": "^3.0.0",
+        "@ai-sdk/anthropic": "^4.0.79",
+        "@ai-sdk/azure": "^4.0.101",
+        "@ai-sdk/cohere": "^4.0.60",
+        "@ai-sdk/google": "^4.0.95",
+        "@ai-sdk/google-vertex": "^5.0.111",
+        "@ai-sdk/mcp": "^2.0.74",
+        "@ai-sdk/mistral": "^4.0.63",
+        "@ai-sdk/openai": "^4.0.93",
+        "@ai-sdk/openai-compatible": "^3.0.68",
+        "@ai-sdk/provider": "^4.0.27",
+        "@ai-sdk/provider-utils": "^5.0.59",
+        "@ai-sdk/xai": "^5.0.21",
         "@ffmpeg.wasm/core-st": "^0.13.2",
         "@ffmpeg.wasm/main": "^0.13.1",
         "@modelcontextprotocol/sdk": "^1.15.0",
-        "ai": "^6.0.0",
-        "ai-retry": "^1.0.1",
+        "ai": "^7.0.139",
+        "ai-retry": "^2.7.1",
         "cf-worker-adapter": "^1.4.0",
         "node-cron": "^4.2.0"
     },

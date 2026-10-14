@@ -1,17 +1,17 @@
 /* eslint-disable no-case-declarations */
 import type { MetadataExtractor } from '@ai-sdk/openai-compatible';
-import type { LanguageModelV3 } from '@ai-sdk/provider';
+import type { LanguageModelV4 } from '@ai-sdk/provider';
 import type { AgentUserConfig } from '../config/types';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createCohere } from '@ai-sdk/cohere';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createGoogle } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
 import { createXai } from '@ai-sdk/xai';
 import { wrapLanguageModel } from 'ai';
 import { isCfWorker } from '../telegram/utils/tg_utils';
 
-export async function createLlmModel(model: string, context: AgentUserConfig): Promise<LanguageModelV3> {
+export async function createLlmModel(model: string, context: AgentUserConfig): Promise<LanguageModelV4> {
     let [agent, model_id] = model.includes(':') ? model.trim().split(':') : [context.AI_CHAT_PROVIDER, model];
     // if agent not exists, fallback to model
     const availableAgents = ['openai', 'anthropic', 'google', 'cohere', 'vertex', 'xai', 'oailike'];
@@ -36,45 +36,45 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 fetch: mockFetch(model_id, context, agent),
             });
             if (isResponseApi) {
-                return provider.responses(model_id) as LanguageModelV3;
+                return provider.responses(model_id) as LanguageModelV4;
             }
-            return provider.languageModel(model_id) as LanguageModelV3;
+            return provider.languageModel(model_id) as LanguageModelV4;
         case 'anthropic':
             return createAnthropic({
                 baseURL: context.ANTHROPIC_API_BASE,
                 apiKey: context.ANTHROPIC_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV3;
-	        case 'google':
-	            const googleModel = createGoogleGenerativeAI({
-	                baseURL: context.GOOGLE_API_BASE,
-	                apiKey: context.GOOGLE_API_KEY || undefined,
-	                fetch: mockFetch(model_id, context, agent),
-	            }).languageModel(model_id) as LanguageModelV3;
+            }).languageModel(model_id) as LanguageModelV4;
+        case 'google':
+            const googleModel = createGoogle({
+                baseURL: context.GOOGLE_API_BASE,
+                apiKey: context.GOOGLE_API_KEY || undefined,
+                fetch: mockFetch(model_id, context, agent),
+            }).languageModel(model_id) as LanguageModelV4;
 
-	            // Google supports youtube urls and internal file urls, but not arbitrary external urls.
-	            // (Gemini 2/3 model families)
-	            if (googleModel.modelId.startsWith('gemini-2') || googleModel.modelId.startsWith('gemini-3')) {
-	                return wrapLanguageModel({
-	                    model: googleModel,
-	                    middleware: {
-	                        specificationVersion: 'v3',
-	                        overrideSupportedUrls: () => ({
-	                            '*': [
-	                                /^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/,
-	                                /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/,
-	                            ],
-	                        }),
-	                    },
-	                });
-	            }
-	            return googleModel;
+            // Google supports youtube urls and internal file urls, but not arbitrary external urls.
+            // (Gemini 2+ model families)
+            if (geminiGeneration(googleModel.modelId) >= 2) {
+                return wrapLanguageModel({
+                    model: googleModel,
+                    middleware: {
+                        specificationVersion: 'v4',
+                        overrideSupportedUrls: () => ({
+                            '*': [
+                                /^https:\/\/generativelanguage.googleapis.com\/v1beta\/files\/.*$/,
+                                /^https?:\/\/(youtu\.be|www\.youtube\.com)\/.+/,
+                            ],
+                        }),
+                    },
+                });
+            }
+            return googleModel;
         case 'cohere':
             return createCohere({
                 baseURL: context.COHERE_API_BASE,
                 apiKey: context.COHERE_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV3;
+            }).languageModel(model_id) as LanguageModelV4;
         case 'vertex':
             if (isCfWorker)
                 throw new Error('Vertex is not supported in Cloudflare Workers');
@@ -86,13 +86,14 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                     credentials: context.VERTEX_CREDENTIALS,
                 },
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as unknown as LanguageModelV3;
+            }).languageModel(model_id);
         case 'xai':
+            // @ai-sdk/xai v5 only supports the Responses API
             return createXai({
                 baseURL: context.XAI_API_BASE,
                 apiKey: context.XAI_API_KEY || undefined,
                 fetch: mockFetch(model_id, context, agent),
-            }).languageModel(model_id) as LanguageModelV3;
+            }).languageModel(model_id);
         case 'oailike':
         default:
             return new OpenAICompatibleChatLanguageModel(model_id, {
@@ -104,7 +105,7 @@ export async function createLlmModel(model: string, context: AgentUserConfig): P
                 includeUsage: true,
                 metadataExtractor: extraMetadataExtractor(model_id),
                 fetch: mockFetch(model_id, context, agent),
-            }) as LanguageModelV3;
+            }) as LanguageModelV4;
     }
     // if (model.includes(':')) {
     //     if (model.startsWith('google:') || model.startsWith('vertex:')) {
@@ -282,12 +283,20 @@ function mockParams({ modelId, config, provider, options }: MockParams) {
             { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
             { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
         ];
-        // Inject thinkingConfig based on GOOGLE_THINKING_LEVEL
-        if (config.GOOGLE_THINKING_LEVEL !== 'off') {
+        const generation = geminiGeneration(modelId);
+        // Inject thinkingLevel based on GOOGLE_THINKING_LEVEL (Gemini 3+ only; Gemini 2.5 uses thinkingBudget)
+        const thinkingConfig = options.generationConfig?.thinkingConfig;
+        if (config.GOOGLE_THINKING_LEVEL !== 'off' && generation >= 3 && thinkingConfig?.thinkingBudget === undefined) {
+            // Gemini 4 rejects `minimal` with HTTP 400
+            const thinkingLevel = generation >= 4 && config.GOOGLE_THINKING_LEVEL === 'minimal' ? 'low' : config.GOOGLE_THINKING_LEVEL;
             options.generationConfig = options.generationConfig || {};
-            options.generationConfig.thinkingConfig = {
-                thinkingLevel: config.GOOGLE_THINKING_LEVEL,
-            };
+            options.generationConfig.thinkingConfig = { ...thinkingConfig, thinkingLevel };
+        }
+        // Gemini 4 ignores custom sampling params and returns a deprecation warning
+        if (generation >= 4 && options.generationConfig) {
+            delete options.generationConfig.temperature;
+            delete options.generationConfig.topP;
+            delete options.generationConfig.topK;
         }
         // Note: Google built-in tools are now injected via AI SDK's google.tools.* in model_middleware.ts
     }
@@ -297,7 +306,10 @@ function mockParams({ modelId, config, provider, options }: MockParams) {
 
 function mockFetch(modelId: string, context: AgentUserConfig, provider: string) {
     return (url: RequestInfo | URL, options?: RequestInit) => {
-        const body = JSON.parse(options?.body as string) || {};
+        if (typeof options?.body !== 'string') {
+            return fetch(url, options);
+        }
+        const body = JSON.parse(options.body) || {};
         mockParams({ modelId, config: context, provider, options: body });
         return fetch(url, {
             ...options,
@@ -306,8 +318,21 @@ function mockFetch(modelId: string, context: AgentUserConfig, provider: string) 
     };
 }
 
+/**
+ * Generation of a Gemini model id, e.g. `gemini-4-argon` -> 4, `models/gemini-2.5-flash` -> 2.
+ * Unversioned aliases (`gemini-flash-latest`) count as Gemini 3, matching the AI SDK's own detection.
+ * Returns 0 for non-Gemini models.
+ */
+export function geminiGeneration(modelId: string): number {
+    const name = modelId.split('/').at(-1) ?? '';
+    if (!name.startsWith('gemini-')) {
+        return 0;
+    }
+    return Number(/^gemini-(\d+)/.exec(name)?.[1] ?? 3);
+}
+
 export function getGoogleBuiltinTools(context: AgentUserConfig) {
-    const google = createGoogleGenerativeAI({
+    const google = createGoogle({
         baseURL: context.GOOGLE_API_BASE,
         apiKey: context.GOOGLE_API_KEY || undefined,
     });

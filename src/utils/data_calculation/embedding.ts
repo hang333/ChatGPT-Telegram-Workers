@@ -1,5 +1,5 @@
 import type { AgentUserConfig } from '../../config/env';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createGoogle } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
 import { embedMany } from 'ai';
 import { OpenAIBase } from '../../agent/openai';
@@ -64,7 +64,7 @@ export class OpenAILikeEmbedding extends OpenAILikeBase {
 export class GoogleEmbedding {
     readonly request = async (data: string[], context: AgentUserConfig): Promise<Array<{ embed: number[]; value: string }>> => {
         const { embeddings, values } = await embedMany({
-            model: createGoogleGenerativeAI({
+            model: createGoogle({
                 baseURL: context.GOOGLE_API_BASE,
                 apiKey: context.GOOGLE_API_KEY || undefined,
             }).embeddingModel(context.GOOGLE_EMBEDDING_MODEL),

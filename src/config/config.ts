@@ -447,9 +447,9 @@ export class GeminiConfig {
         // },
     };
 
-    // Thinking level for Gemini models
-    // Pro supports: 'low', 'high'; Flash supports: 'minimal', 'low', 'medium', 'high'
-    // Set to 'off' to disable thinking
+    // Thinking level for Gemini 3+ models (ignored for Gemini 2.5, which uses thinkingBudget)
+    // Gemini 4 supports 'low' | 'medium' (default) | 'high'; 'minimal' is sent as 'low'
+    // 'off' sends no thinkingLevel (model default); Gemini 3+ thinking cannot be fully disabled
     GOOGLE_THINKING_LEVEL: 'off' | 'minimal' | 'low' | 'medium' | 'high' = 'off';
 }
 
@@ -674,8 +674,6 @@ export class ExtraUserConfig {
     COVER_MESSAGE_ROLE: Record<string, string> = {};
     // max history length, default is 10
     MAX_HISTORY_LENGTH = 10;
-    // whether to generate long text (limited by MAX_STEPS)
-    CONTINUE_STEP = false;
     // message replacer, you can use it to replace message text in the middle of the message, multiple words can be replaced at the same time
     MESSAGE_REPLACER: Record<string, string> = {};
     // Parameter modifier; string array; separated by colons, the key is the model name, separated by commas;
