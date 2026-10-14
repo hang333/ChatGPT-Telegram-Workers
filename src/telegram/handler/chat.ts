@@ -142,13 +142,15 @@ export class ChatHandler implements MessageHandler<WorkerContext> {
                 text: message.text || message.caption as string,
             });
         } else {
+            // Mark the filler text as system-generated so the model doesn't mistake it
+            // for the user writing in English and switch the reply language.
             params.content.push({
                 type: 'text',
                 text: type === 'sticker'
-                    ? 'User sent a sticker to respond to you'
+                    ? '[The user sent a sticker in response to you. Reply in the language of the conversation.]'
                     : ['audio', 'voice'].includes(type)
                             ? context.USER_CONFIG.AUDIO_PROMPT
-                            : `Please explain the ${type}`,
+                            : `[The user sent a ${type} without any text. Explain it, replying in the language of the conversation.]`,
             });
         }
 
